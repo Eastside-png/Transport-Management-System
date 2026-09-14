@@ -1,0 +1,1612 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Transport Management Driver App</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script>
+        // Same Google Maps key as the admin panel (Transport Management) - see the matching comment
+        // there for why it's a plain client-side constant in this prototype.
+        window.GOOGLE_MAPS_API_KEY = 'AIzaSyDrCViSzlULAmAXzbulbIw9p6BvX9zh8o0';
+    </script>
+    <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyDrCViSzlULAmAXzbulbIw9p6BvX9zh8o0"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = { theme: { extend: { colors: { brandBlue: '#0F172A', brandAccent: '#3B82F6', bgLight: '#F8FAFC' }, fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] }, boxShadow: { card: '0 1px 3px 0 rgb(15 23 42 / 0.06)', cardHover: '0 4px 12px 0 rgb(15 23 42 / 0.08)' } } } };
+    </script>
+    <style>
+        body { background: #F8FAFC; font-family: 'Inter', system-ui, sans-serif; margin: 0; -webkit-font-smoothing: antialiased; }
+        ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+        @keyframes pulse-ring { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+        .sos-pulse { animation: pulse-ring 2s ease-in-out infinite; }
+        @keyframes slide-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-in { animation: slide-in 0.2s ease-out; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+<script type="text/babel">
+/* global React, ReactDOM, google */
+const { useState, useEffect, useRef } = React;
+
+const uid = (prefix) => `${prefix}-${Date.now().toString(36).toUpperCase()}`;
+
+/* ------------------------------------------------------------------ */
+/* Seed data - mirrors the drivers/assignments/sosAlerts already used  */
+/* in the admin prototype (same names, vehicle IDs & trip details) so  */
+/* the two prototypes tell a consistent story, even without a shared  */
+/* backend. This file has no connection to the admin file at runtime -  */
+/* it's a standalone demo of what the driver-facing view would show.  */
+/* ------------------------------------------------------------------ */
+const DRIVER_APP_DATA = {
+    drivers: [
+        { id: 'DRV-001', name: 'Ramesh Kumar', vehicleId: 'VH-4401', vendor: 'SwiftRide Logistics', licenseId: 'DL0120190123456', phone: '+91 98220 11223', licenseExpiry: '2027-11-30', status: 'Active' },
+        { id: 'DRV-002', name: 'Amit Patel', vehicleId: 'VH-1092', vendor: 'Metro Fleet Services', licenseId: 'HR0220180234567', phone: '+91 91234 09876', licenseExpiry: '2026-09-15', status: 'Active' },
+        { id: 'DRV-003', name: 'Vikram Singh', vehicleId: 'VH-3320', vendor: 'Metro Fleet Services', licenseId: 'HR0220200345678', phone: '+91 98765 11122', licenseExpiry: '2028-01-20', status: 'Active' },
+        { id: 'DRV-004', name: 'Manoj Das', vehicleId: 'VH-6001', vendor: 'Royal Transit India', licenseId: 'UP1420170456789', phone: '+91 90123 45678', licenseExpiry: '2026-08-25', status: 'Active' },
+        { id: 'DRV-005', name: 'Priya Sharma', vehicleId: 'VH-2210', vendor: 'SwiftRide Logistics', licenseId: 'DL0120210567890', phone: '+91 99887 22334', licenseExpiry: '2029-04-10', status: 'Active' },
+        { id: 'DRV-006', name: 'Karan Malhotra', vehicleId: 'VH-5501', vendor: 'Royal Transit India', licenseId: 'UP1420190678901', phone: '+91 97654 33445', licenseExpiry: '2025-05-18', status: 'Expired' },
+        { id: 'DRV-007', name: 'Suresh Yadav', vehicleId: 'VH-9002', vendor: 'Capital Coachways', licenseId: 'DL0820200789012', phone: '+91 96543 44556', licenseExpiry: '2027-07-22', status: 'Active' },
+        { id: 'DRV-008', name: 'Arvind Nair', vehicleId: 'VH-9502', vendor: 'Highway Star Travels', licenseId: 'HR5120180890123', phone: '+91 95432 55667', licenseExpiry: '2026-12-01', status: 'Active' },
+        { id: 'DRV-009', name: 'Farhan Sheikh', vehicleId: 'VH-9601', vendor: 'Highway Star Travels', licenseId: 'HR5120210901234', phone: '+91 94321 66778', licenseExpiry: '2028-06-14', status: 'Active' },
+        { id: 'DRV-010', name: 'Alok Nath', vehicleId: 'VH-9201', vendor: 'Capital Coachways', licenseId: 'DL0820190012987', phone: '+91 93210 77889', licenseExpiry: '2027-02-28', status: 'Active' },
+        { id: 'DRV-011', name: 'Rajesh Menon', vehicleId: 'VH-7001', vendor: 'Royal Transit India', licenseId: 'UP1420200123098', phone: '+91 92109 88990', licenseExpiry: '2026-10-09', status: 'Active' },
+        { id: 'DRV-012', name: 'Deepika Rao', vehicleId: 'VH-1301', vendor: 'SwiftRide Logistics', licenseId: 'DL0120200234109', phone: '+91 91098 99001', licenseExpiry: '2029-03-17', status: 'Active' },
+        { id: 'DRV-013', name: 'Sunil Chauhan', vehicleId: 'VH-4501', vendor: 'Metro Fleet Services', licenseId: 'HR0220170345210', phone: '+91 90987 00112', licenseExpiry: '2025-09-30', status: 'Expired' },
+        { id: 'DRV-014', name: 'Imran Qureshi', vehicleId: 'VH-9801', vendor: 'Highway Star Travels', licenseId: 'HR5120220456321', phone: '+91 89876 11223', licenseExpiry: '2028-08-05', status: 'Active' },
+    ],
+    assignments: [
+        { id: 'ASN-001', vehicleId: 'VH-4401', type: 'Bus (40)', driver: 'Ramesh Kumar', vendorName: 'SwiftRide Logistics', route: 'IGI Airport - Terminal 3 -> Hotel Taj Palace', time: '09:15', status: 'In Transit', progress: 62, stakeholder: 'Delegation Alpha - Team Australia', phase: 'ongoing', sos: false },
+        { id: 'ASN-002', vehicleId: 'VH-1092', type: 'Sedan (3)', driver: 'Amit Patel', vendorName: 'Metro Fleet Services', route: 'Hotel Lakeside Residency -> Jawaharlal Nehru Stadium', time: '09:30', status: 'Delayed', progress: 28, stakeholder: 'Chef De Mission - Team India', phase: 'ongoing', sos: true },
+        { id: 'ASN-003', vehicleId: 'VH-3320', type: 'SUV (5)', driver: 'Vikram Singh', vendorName: 'Metro Fleet Services', route: 'Hotel Taj Palace -> Indira Gandhi Arena', time: '10:00', status: 'Scheduled', progress: 0, stakeholder: 'Director of Competition', phase: 'upcoming', sos: false },
+        { id: 'ASN-004', vehicleId: 'VH-6001', type: 'Bus (40)', driver: 'Manoj Das', vendorName: 'Royal Transit India', route: 'Hotel Grand Plaza -> Jawaharlal Nehru Stadium', time: '10:15', status: 'Scheduled', progress: 0, stakeholder: 'Athletes Batch B', phase: 'upcoming', sos: false },
+        { id: 'ASN-005', vehicleId: 'VH-2210', type: 'Minibus (20)', driver: 'Priya Sharma', vendorName: 'SwiftRide Logistics', route: 'Media Broadcasting Center -> Major Dhyan Chand National Stadium', time: '08:00', status: 'Completed', progress: 100, stakeholder: 'Media Pool - International Broadcasters', phase: 'past', sos: false },
+        { id: 'ASN-006', vehicleId: 'VH-5501', type: 'Minibus (20)', driver: 'Karan Malhotra', vendorName: 'Royal Transit India', route: 'Athletes Village - Block A -> Thyagaraj Sports Complex', time: '07:30', status: 'Completed', progress: 100, stakeholder: 'Support Staff Pool', phase: 'past', sos: false },
+        { id: 'ASN-007', vehicleId: 'VH-9002', type: 'Bus (40)', driver: 'Suresh Yadav', vendorName: 'Capital Coachways', route: 'New Delhi Railway Station -> Athletes Village - Block C', time: '09:45', status: 'In Transit', progress: 81, stakeholder: 'Athletes Batch C - Wrestling', phase: 'ongoing', sos: true },
+        { id: 'ASN-008', vehicleId: 'VH-9502', type: 'Bus (40)', driver: 'Arvind Nair', vendorName: 'Highway Star Travels', route: 'Hotel Taj Palace -> Dr. Karni Singh Shooting Range', time: '10:30', status: 'Scheduled', progress: 0, stakeholder: 'Shooting Federation Delegation', phase: 'upcoming', sos: false },
+        { id: 'ASN-009', vehicleId: 'VH-9601', type: 'Minibus (20)', driver: 'Farhan Sheikh', vendorName: 'Highway Star Travels', route: 'Athletes Village - Block A -> Practice Arena 1', time: '08:45', status: 'In Transit', progress: 45, stakeholder: 'Athletes Batch A - Track & Field', phase: 'ongoing', sos: false },
+        { id: 'ASN-010', vehicleId: 'VH-9201', type: 'SUV (5)', driver: 'Alok Nath', vendorName: 'Capital Coachways', route: 'Protocol Office - Pragati Maidan -> Hotel Taj Palace', time: '11:00', status: 'Scheduled', progress: 0, stakeholder: 'Deputy CDM - Team Japan', phase: 'upcoming', sos: false },
+        { id: 'ASN-011', vehicleId: 'VH-7001', type: 'SUV (5)', driver: 'Rajesh Menon', vendorName: 'Royal Transit India', route: 'Yamuna Sports Complex -> Hotel Grand Plaza', time: '07:00', status: 'Completed', progress: 100, stakeholder: 'Officials Pool', phase: 'past', sos: false },
+        { id: 'ASN-012', vehicleId: 'VH-1301', type: 'Sedan (3)', driver: 'Deepika Rao', vendorName: 'SwiftRide Logistics', route: 'Hotel Grand Plaza -> Protocol Office - Pragati Maidan', time: '09:00', status: 'In Transit', progress: 55, stakeholder: 'Chef De Mission - Team Sri Lanka', phase: 'ongoing', sos: false },
+        { id: 'ASN-013', vehicleId: 'VH-4501', type: 'Bus (40)', driver: 'Sunil Chauhan', vendorName: 'Metro Fleet Services', route: 'IGI Airport - Terminal 3 -> Athletes Village - Block C', time: '11:30', status: 'Scheduled', progress: 0, stakeholder: 'Delegation Wave 3 - Team Kenya', phase: 'upcoming', sos: false },
+        { id: 'ASN-014', vehicleId: 'VH-9801', type: 'Sedan (3)', driver: 'Imran Qureshi', vendorName: 'Highway Star Travels', route: 'Hotel Taj Palace -> New Delhi Railway Station', time: '08:15', status: 'Completed', progress: 100, stakeholder: 'VIP Escort - Sports Ministry Office', phase: 'past', sos: false },
+        // Ramesh Kumar gets a second and third trip on the same vehicle (VH-4401) later the same day,
+        // so his homescreen demonstrates the Ongoing / Upcoming / Completed grouping all at once.
+        { id: 'ASN-015', vehicleId: 'VH-4401', type: 'Bus (40)', driver: 'Ramesh Kumar', vendorName: 'SwiftRide Logistics', route: 'Hotel Taj Palace -> Jawaharlal Nehru Stadium', time: '13:00', status: 'Scheduled', progress: 0, stakeholder: 'Delegation Alpha - Team Australia', phase: 'upcoming', sos: false },
+        { id: 'ASN-016', vehicleId: 'VH-4401', type: 'Bus (40)', driver: 'Ramesh Kumar', vendorName: 'SwiftRide Logistics', route: 'Athletes Village - Block A -> IGI Airport - Terminal 3', time: '07:00', status: 'Completed', progress: 100, stakeholder: 'Team Australia - Equipment Transfer', phase: 'past', sos: false },
+    ],
+    sosAlerts: [
+        { id: 'SOS-001', assignmentId: 'ASN-002', vehicleId: 'VH-1092', driver: 'Amit Patel', location: 'Ring Road, near Hotel Lakeside Residency', reportedAt: '09:34', message: 'Vehicle breakdown - passenger safety OK', status: 'Active' },
+        { id: 'SOS-002', assignmentId: 'ASN-007', vehicleId: 'VH-9002', driver: 'Suresh Yadav', location: 'NH-9 near Akshardham, approaching Athletes Village', reportedAt: '09:52', message: 'Minor collision - awaiting police report, all passengers safe', status: 'Active' },
+    ],
+};
+
+// Approximate coordinates for every named location referenced in the seed routes above, so a route
+// string like "A -> B" can be resolved to a pair of map points without storing lat/lng per trip.
+const LOCATION_COORDS = {
+    'IGI Airport - Terminal 3': [28.5562, 77.1000],
+    'Hotel Taj Palace': [28.6001, 77.1770],
+    'Jawaharlal Nehru Stadium': [28.5829, 77.2340],
+    'Hotel Lakeside Residency': [28.5820, 77.1210],
+    'Indira Gandhi Arena': [28.6108, 77.2373],
+    'Hotel Grand Plaza': [28.5355, 77.1560],
+    'Media Broadcasting Center': [28.6139, 77.2410],
+    'Major Dhyan Chand National Stadium': [28.6117, 77.2368],
+    'Athletes Village - Block A': [28.6127, 77.2773],
+    'Thyagaraj Sports Complex': [28.5730, 77.2270],
+    'New Delhi Railway Station': [28.6430, 77.2194],
+    'Athletes Village - Block C': [28.6140, 77.2790],
+    'Dr. Karni Singh Shooting Range': [28.5510, 77.2990],
+    'Practice Arena 1': [28.5860, 77.2300],
+    'Protocol Office - Pragati Maidan': [28.6139, 77.2431],
+    'Yamuna Sports Complex': [28.6680, 77.2820],
+};
+
+// Same distance-matrix approach as the admin prototype (same constants, same math) so an ETA shown
+// here always agrees with the estimate an admin would see when planning the same route. No routing
+// engine available in this prototype, so distance/duration are both estimated from straight-line
+// distance rather than real road data.
+const haversineKm = ([lat1, lng1], [lat2, lng2]) => {
+    const R = 6371;
+    const toRad = (deg) => deg * Math.PI / 180;
+    const dLat = toRad(lat2 - lat1);
+    const dLng = toRad(lng2 - lng1);
+    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+        + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+};
+
+const ROAD_DISTANCE_FACTOR = 1.35;
+const AVG_ROAD_SPEED_KMH = 25;
+
+// Geo-fencing - a driver must be within this radius of the pickup point to Start Trip, or of the
+// drop-off point to Mark Trip Complete, whenever it's enabled (see App's geoFencingEnabled). 500m
+// gives real GPS/network-location accuracy some slack while still meaningfully confirming "actually
+// there," rather than requiring pinpoint precision a phone's location fix often can't hit anyway.
+const GEOFENCE_RADIUS_KM = 0.5;
+// Must match the exact key the admin panel's window.AdminTab writes to (toggleGeoFencing in
+// ACT Travel Prototype.html) - this is the entire bridge between the two files, since they share no
+// backend. See the geoFencingEnabled state/effect in App for how it's read and kept live.
+const GEOFENCING_STORAGE_KEY = 'kheloTechGeoFencingEnabled';
+
+// Wraps the browser's Geolocation API in a promise - rejects with a real Error either when the API
+// isn't available at all (older browser, non-HTTPS/non-localhost origin) or when the browser's own
+// callback reports one (permission denied, position unavailable, timed out).
+const getCurrentPositionAsync = () => new Promise((resolve, reject) => {
+    if (!navigator.geolocation) {
+        reject(new Error('Geolocation is not supported on this device or browser.'));
+        return;
+    }
+    navigator.geolocation.getCurrentPosition(
+        (pos) => resolve([pos.coords.latitude, pos.coords.longitude]),
+        (err) => reject(new Error(err && err.message ? err.message : 'Unable to determine your current location.')),
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    );
+});
+
+const DISTANCE_MATRIX = (() => {
+    const names = Object.keys(LOCATION_COORDS);
+    const matrix = {};
+    names.forEach(from => {
+        matrix[from] = {};
+        names.forEach(to => {
+            if (from === to) { matrix[from][to] = { distanceKm: 0, durationMin: 0 }; return; }
+            const roadKm = haversineKm(LOCATION_COORDS[from], LOCATION_COORDS[to]) * ROAD_DISTANCE_FACTOR;
+            matrix[from][to] = {
+                distanceKm: Math.round(roadKm * 10) / 10,
+                durationMin: Math.round(roadKm / AVG_ROAD_SPEED_KMH * 60),
+            };
+        });
+    });
+    return matrix;
+})();
+
+const lookupDistance = (origin, destination) => {
+    if (!origin || !destination) return null;
+    const row = DISTANCE_MATRIX[origin];
+    return (row && row[destination]) || null;
+};
+
+// Total estimated duration for a "A -> B" route string.
+const tripEstimate = (route) => {
+    const [origin, destination] = route.split(' -> ');
+    return lookupDistance(origin, destination);
+};
+
+// Straight-line interpolation between two [lat, lng] points at `progress` (0-100) along the way -
+// good enough for a demo "here's roughly where the vehicle is right now" marker without a real
+// routing engine giving an actual road-following position.
+const posAlongRoute = (origin, dest, progress) => {
+    if (!origin || !dest) return null;
+    const t = Math.max(0, Math.min(1, (progress || 0) / 100));
+    return [origin[0] + (dest[0] - origin[0]) * t, origin[1] + (dest[1] - origin[1]) * t];
+};
+
+// Rough per-km fare estimate by vehicle category, purely for the Home screen's "Estimated Cost"
+// figure - this prototype has no real fare/billing model, so these are flat placeholder rates rather
+// than anything reflecting actual contracted pricing.
+const VEHICLE_COST_PER_KM = { Sedan: 14, SUV: 18, Minibus: 25, Bus: 35 };
+const tripCostEstimate = (trip) => {
+    const est = tripEstimate(trip.route);
+    const rate = VEHICLE_COST_PER_KM[vehicleCategoryFromType(trip.type)];
+    if (!est || !rate) return null;
+    return Math.round(est.distanceKm * rate);
+};
+
+// Same fuel-economy figures as the admin prototype's VEHICLE_CATEGORIES (avgConsumption,
+// tankCapacity, refuelCycleKm) - kept here as a lightweight lookup by category name (parsed off an
+// assignment's own "type" field, e.g. "Bus (40)" -> "Bus") rather than a full vehicle-categorization
+// module, since a driver only ever needs their own one vehicle's numbers, not the whole fleet's.
+const VEHICLE_FUEL_DEFAULTS = {
+    Sedan: { avgConsumption: 15, tankCapacity: 45, refuelCycleKm: 500 },
+    SUV: { avgConsumption: 12, tankCapacity: 55, refuelCycleKm: 500 },
+    Minibus: { avgConsumption: 8, tankCapacity: 90, refuelCycleKm: 400 },
+    Bus: { avgConsumption: 4, tankCapacity: 200, refuelCycleKm: 350 },
+};
+const vehicleCategoryFromType = (type) => (type || '').split(' ')[0]; // "Bus (40)" -> "Bus"
+
+// Model names by category, mirroring the admin prototype's VEHICLE_CATEGORIES model lists so the two
+// prototypes describe a believable, consistent fleet even without a shared backend. There's no
+// per-vehicle fleet record here though (this file only ever sees a vehicleId + a "Bus (40)"-style type
+// string on each assignment) - so a vehicle's specific model is picked deterministically off its own
+// id's characters rather than stored anywhere. The same id always resolves to the same model,
+// including a freshly-generated reassignment id like "VH-4402" that never existed in any seed data.
+const VEHICLE_MODELS = {
+    Sedan: ['Swift Dzire', 'Honda Amaze', 'Toyota Etios', 'Hyundai Aura', 'Honda City', 'Maruti Ciaz'],
+    SUV: ['Toyota Innova Crysta', 'Mahindra XUV700', 'Toyota Fortuner', 'Mahindra Scorpio-N', 'Hyundai Creta', 'Tata Safari'],
+    Minibus: ['Force Traveller', 'Tata Winger', 'Force Urbania', 'Mahindra Supro Van'],
+    Bus: ['Ashok Leyland Viking', 'Tata Starbus Ultra', 'Eicher Skyline Pro', 'BharatBenz 1617'],
+};
+// The one place "how does a vehicle's name look" gets decided for a given type + id - model
+// prominent, id secondary (e.g. "Toyota Innova Crysta · VH-3320") - every screen showing a vehicle to
+// the driver should render it through this rather than showing the bare id on its own.
+const vehicleNameFor = (type, vehicleId) => {
+    const models = VEHICLE_MODELS[vehicleCategoryFromType(type)];
+    if (!models || !vehicleId) return type || vehicleId || '—';
+    const hash = [...vehicleId].reduce((a, c) => a + c.charCodeAt(0), 0);
+    return models[hash % models.length];
+};
+
+// Same "STATE-DD-LETTERS-####" plate format the admin prototype's seed fleet uses (e.g.
+// "DL-01-AB-4401"), and the same trick of ending in the vehicle id's own numeric suffix - so a plate
+// shown here always looks like it plausibly belongs to that id. There's no stored registration record
+// to look up (see VEHICLE_MODELS above for why), so the state/district/letters are picked
+// deterministically off the id's characters, same as the model name.
+const REG_STATE_CODES = ['DL', 'HR', 'UP', 'MH', 'KA'];
+const REG_LETTER_PAIRS = ['AB', 'CD', 'EF', 'GH', 'JK', 'LM'];
+const vehicleRegNoFor = (vehicleId) => {
+    if (!vehicleId) return '—';
+    const digits = vehicleId.replace(/\D/g, '').padStart(4, '0').slice(-4);
+    const hash = [...vehicleId].reduce((a, c) => a + c.charCodeAt(0), 0);
+    const state = REG_STATE_CODES[hash % REG_STATE_CODES.length];
+    const district = String((hash % 40) + 1).padStart(2, '0');
+    const letters = REG_LETTER_PAIRS[Math.floor(hash / REG_STATE_CODES.length) % REG_LETTER_PAIRS.length];
+    return `${state}-${district}-${letters}-${digits}`;
+};
+
+// How far this vehicle has driven today, in km - a Completed trip counts in full, an In
+// Transit/Delayed one counts for whatever share of its route it's already covered (progress%), a
+// Scheduled one counts for nothing. Sums across every trip for this vehicleId, not just whichever one
+// is currently open, since fuel doesn't reset between a driver's own back-to-back trips on the same
+// vehicle (see DRV-001's three trips on VH-4401 in the seed data).
+const vehicleTotalKmDriven = (vehicleId, assignments) =>
+    assignments
+        .filter(a => a.vehicleId === vehicleId)
+        .reduce((sum, a) => {
+            const est = tripEstimate(a.route);
+            if (!est) return sum;
+            if (a.status === 'Completed') return sum + est.distanceKm;
+            if (a.status === 'In Transit' || a.status === 'Delayed') return sum + est.distanceKm * ((a.progress || 0) / 100);
+            return sum;
+        }, 0);
+
+// A vehicle's live fuel picture - mirrors the admin prototype's window.vehicleFuelProfile exactly
+// (same depletion model: fuelLevel is derived from kmSinceRefuel, never stored directly, so it only
+// ever moves down as trips actually progress and only recovers when Log Refuel is tapped). `fuelState`
+// is App's own local map of vehicleId -> { fuelCheckpointKm, lastRefuelDate, lastRefuelSource } - this
+// prototype has no shared backend with the admin app, so a refuel logged here never reaches it and
+// vice versa; each side just tells its own honest, internally-consistent version of the story.
+const vehicleFuelProfile = (trip, assignments, fuelState) => {
+    const cat = VEHICLE_FUEL_DEFAULTS[vehicleCategoryFromType(trip.type)];
+    if (!cat) return null;
+    const state = fuelState[trip.vehicleId] || {};
+    const kmSinceRefuel = Math.max(0, vehicleTotalKmDriven(trip.vehicleId, assignments) - (state.fuelCheckpointKm || 0));
+    const litersUsed = kmSinceRefuel / cat.avgConsumption;
+    const fuelLevel = Math.max(0, Math.min(100, Math.round(100 - (litersUsed / cat.tankCapacity) * 100)));
+    return {
+        fuelLevel,
+        refuelCycleKm: cat.refuelCycleKm,
+        kmSinceRefuel: Math.round(kmSinceRefuel * 10) / 10,
+        dueForRefuel: kmSinceRefuel >= cat.refuelCycleKm,
+        lastRefuelDate: state.lastRefuelDate || null,
+        lastRefuelSource: state.lastRefuelSource || null,
+    };
+};
+
+const formatClockTime = (date) => date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+// Live ETA for a trip already under way: total estimated duration minus however much of it
+// progress% already covers, projected forward from right now - so it naturally counts down as
+// progress ticks up from the simulated-GPS effect in App, without needing its own timer.
+const liveEta = (trip) => {
+    const est = tripEstimate(trip.route);
+    if (!est) return null;
+    const remainingMin = est.durationMin * (1 - (trip.progress || 0) / 100);
+    return formatClockTime(new Date(Date.now() + remainingMin * 60000));
+};
+
+const STATUS_COLOR = {
+    'In Transit': 'bg-emerald-100 text-emerald-700',
+    'Delayed': 'bg-amber-100 text-amber-700',
+    'Scheduled': 'bg-slate-100 text-slate-600',
+    'Completed': 'bg-blue-100 text-blue-700',
+    'Active': 'bg-emerald-100 text-emerald-700',
+    'Expired': 'bg-red-100 text-red-700',
+    'Resolved': 'bg-emerald-100 text-emerald-700',
+    'Reassigned': 'bg-amber-200 text-amber-900',
+};
+
+const ICONS = {
+    home: ['M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z', 'M9 22V12h6v10'],
+    trips: ['M19 4H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2z', 'M16 2v4M8 2v4M3 10h18'],
+    user: ['M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2', 'M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z'],
+    back: ['M19 12H5', 'M12 19l-7-7 7-7'],
+    alert: ['M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z', 'M12 9v4', 'M12 17h.01'],
+    check: ['M20 6L9 17l-5-5'],
+    logout: ['M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4', 'M16 17l5-5-5-5', 'M21 12H9'],
+    truck: ['M14 16H9m10 0h3v-3.15a1 1 0 0 0-.84-.99L16 11l-2.7-3.6a1 1 0 0 0-.8-.4H8.24a1 1 0 0 0-.8.4L5 11l-5.16.86a1 1 0 0 0-.84.99V16h3', 'M6 16a2 2 0 1 0 0-4 2 2 0 0 0 0 4z', 'M18 16a2 2 0 1 0 0-4 2 2 0 0 0 0 4z'],
+    play: ['M6 3l14 9-14 9V3z'],
+    lock: ['M19 11H5a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7a2 2 0 0 0-2-2z', 'M7 11V7a5 5 0 0 1 10 0v4'],
+    shuffle: ['m17 2 4 4-4 4', 'M3 11v-1a4 4 0 0 1 4-4h14', 'm7 22-4-4 4-4', 'M21 13v1a4 4 0 0 1-4 4H3'],
+    pin: ['M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z', 'M12 7a3 3 0 1 0 0 6 3 3 0 0 0 0-6z'],
+    // Added for the Home ongoing-trip cards' labeled-icon-badge redesign - a small glyph next to
+    // Estimated Arrival/Vendor/Fuel/Distance/Estimated Cost, same convention the admin panel already
+    // uses for its own stat labels.
+    clock: ['M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z', 'M12 6v6l4 2'],
+    building: ['M5 21V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16', 'M3 21h18', 'M9 8h1M9 12h1M9 16h1M14 8h1M14 12h1M14 16h1'],
+    droplet: ['M12 2c-3.2 4.6-7 9.6-7 13a7 7 0 0 0 14 0c0-3.4-3.8-8.4-7-13z'],
+    distance: ['M3 21L21 3', 'M7 17l2 2', 'M11 13l2 2', 'M15 9l2 2'],
+    tag: ['M20.59 13.41 13 21a2 2 0 0 1-2.83 0l-8-8A2 2 0 0 1 2 11.59V4a2 2 0 0 1 2-2h7.59a2 2 0 0 1 1.41.59l8 8a2 2 0 0 1 0 2.82z', 'M7 7h.01'],
+};
+
+function Icon({ name, size = 18, className = '' }) {
+    return (
+        <svg width={size} height={size} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24" className={className}>
+            {(ICONS[name] || []).map((d, i) => <path key={i} d={d} />)}
+        </svg>
+    );
+}
+
+function Badge({ status }) {
+    return <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-semibold shrink-0 ${STATUS_COLOR[status] || 'bg-slate-100 text-slate-600'}`}>{status}</span>;
+}
+
+function LoginScreen({ drivers, onLogin }) {
+    const [selectedId, setSelectedId] = useState(drivers[0]?.id || '');
+
+    const login = () => {
+        const driver = drivers.find(d => d.id === selectedId);
+        if (!driver) return alert('Select a driver account.');
+        onLogin(driver);
+    };
+
+    return (
+        <div className="min-h-screen bg-brandBlue flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-8">
+                <div className="w-14 h-14 rounded-2xl bg-brandAccent/10 text-brandAccent flex items-center justify-center mb-4">
+                    <Icon name="truck" size={26} />
+                </div>
+                <h1 className="text-xl font-bold text-slate-800">Transport <span className="text-brandAccent">Management</span></h1>
+                <p className="text-sm text-slate-500 mt-1 mb-6">Driver App - Sign in to view your assigned trips</p>
+
+                <label className="block text-xs font-medium text-slate-500 mb-1">Select Driver Account</label>
+                <select value={selectedId} onChange={e => setSelectedId(e.target.value)}
+                    className="w-full px-3 py-2.5 text-sm border border-slate-200 rounded-lg mb-4 focus:ring-2 focus:ring-brandAccent/30 focus:outline-none">
+                    {drivers.map(d => <option key={d.id} value={d.id}>{d.name} - {d.vehicleId}</option>)}
+                </select>
+
+                <button onClick={login} className="w-full py-2.5 rounded-lg bg-brandBlue text-white text-sm font-semibold hover:bg-slate-800 transition">
+                    Sign In
+                </button>
+                <p className="text-xs text-slate-400 text-center mt-4">Demo prototype - pick any driver to preview their trips</p>
+            </div>
+        </div>
+    );
+}
+
+function TopBar({ driver, title, onBack, onLogout, onSimulateReassignment, onSimulateVehicleReassignment, simulateAtLocation, onToggleSimulateLocation }) {
+    return (
+        <div className="sticky top-0 z-10 bg-brandBlue text-white px-4 py-3 flex items-center gap-3 shadow-md">
+            {onBack ? (
+                <button onClick={onBack} className="p-1 -ml-1 hover:bg-white/10 rounded-lg" aria-label="Back">
+                    <Icon name="back" size={20} />
+                </button>
+            ) : (
+                <div className="w-8 h-8 rounded-full bg-brandAccent flex items-center justify-center text-xs font-bold shrink-0">
+                    {driver.name.split(' ').map(n => n[0]).join('')}
+                </div>
+            )}
+            <div className="flex-1 min-w-0">
+                <p className="font-semibold text-sm truncate">{title}</p>
+                {!onBack && <p className="text-[11px] text-slate-300 truncate">{driver.vehicleId} &middot; {driver.vendor}</p>}
+            </div>
+            {/* Demo-only: normally the geofence check uses this device's real GPS, which almost never
+                happens to be sitting at a Delhi venue - there'd be no way to ever see the "you're
+                close enough, trip starts" path without actually travelling there. Toggling this makes
+                the check report the driver as exactly at the pickup/drop-off point instead of asking
+                the device for its real position, so the full checking -> success flow can be shown on
+                demand. It's a stand-in for the location, not a bypass of the check itself - the
+                "Checking your location..." modal still runs the same way either way. */}
+            {!onBack && onToggleSimulateLocation && (
+                <button onClick={onToggleSimulateLocation}
+                    className={`p-2 rounded-lg transition ${simulateAtLocation ? 'bg-emerald-500/20 text-emerald-300' : 'hover:bg-white/10 text-slate-300'}`}
+                    title={simulateAtLocation ? 'Demo: driver is simulated as being at the pickup/drop-off point - click to turn off' : 'Demo only: simulate the driver being exactly at the pickup/drop-off point'}
+                    aria-label="Toggle simulated location for geo-fencing (demo)" aria-pressed={simulateAtLocation}>
+                    <Icon name="pin" size={17} />
+                </button>
+            )}
+            {!onBack && onSimulateVehicleReassignment && (
+                <button onClick={onSimulateVehicleReassignment} className="p-2 hover:bg-white/10 rounded-lg text-sky-300"
+                    title="Demo only: simulate an admin reassigning this driver to a different vehicle" aria-label="Simulate vehicle reassignment (demo)">
+                    <Icon name="truck" size={17} />
+                </button>
+            )}
+            {!onBack && onSimulateReassignment && (
+                <button onClick={onSimulateReassignment} className="p-2 hover:bg-white/10 rounded-lg text-amber-300"
+                    title="Demo only: simulate an admin reassigning this driver's active/next trip" aria-label="Simulate trip reassignment (demo)">
+                    <Icon name="shuffle" size={17} />
+                </button>
+            )}
+            {!onBack && (
+                <button onClick={onLogout} className="p-2 hover:bg-white/10 rounded-lg" aria-label="Logout">
+                    <Icon name="logout" size={18} />
+                </button>
+            )}
+        </div>
+    );
+}
+
+function BottomNav({ activeTab, onChange }) {
+    const tabs = [
+        { key: 'home', label: 'Home', icon: 'home' },
+        { key: 'trips', label: 'My Trips', icon: 'trips' },
+        { key: 'profile', label: 'Profile', icon: 'user' },
+    ];
+    return (
+        <div className="sticky bottom-0 bg-white border-t border-slate-200 flex">
+            {tabs.map(t => (
+                <button key={t.key} onClick={() => onChange(t.key)}
+                    className={`flex-1 flex flex-col items-center gap-0.5 py-2.5 text-xs font-medium transition ${activeTab === t.key ? 'text-brandAccent' : 'text-slate-400'}`}>
+                    <Icon name={t.icon} size={20} />
+                    {t.label}
+                </button>
+            ))}
+        </div>
+    );
+}
+
+// A dependency-free custom-HTML map pin, same technique (and same reasoning - no Map ID needed,
+// unlike google.maps.marker.AdvancedMarkerElement) as the admin panel's own FleetMap. `label` sets a
+// native title-attribute tooltip on hover as a lightweight stand-in for Leaflet's old click-to-open
+// popup - not worth a full InfoWindow on a map this small.
+function makeDotOverlayClass() {
+    return class DotOverlay extends google.maps.OverlayView {
+        constructor(position, color, size, label) {
+            super();
+            this.position = position;
+            this.color = color;
+            this.size = size;
+            this.label = label;
+            this.div = null;
+        }
+        onAdd() {
+            this.div = document.createElement('div');
+            this.div.style.position = 'absolute';
+            this.div.style.width = `${this.size}px`;
+            this.div.style.height = `${this.size}px`;
+            this.div.style.borderRadius = '50%';
+            this.div.style.background = this.color;
+            this.div.style.border = '2px solid #fff';
+            this.div.style.boxShadow = '0 1px 4px rgba(0,0,0,.4)';
+            if (this.label) this.div.title = this.label;
+            this.getPanes().overlayMouseTarget.appendChild(this.div);
+        }
+        draw() {
+            const proj = this.getProjection();
+            if (!proj || !this.div) return;
+            const point = proj.fromLatLngToDivPixel(this.position);
+            if (!point) return;
+            const half = this.size / 2 + 2;
+            this.div.style.left = `${point.x - half}px`;
+            this.div.style.top = `${point.y - half}px`;
+        }
+        onRemove() { if (this.div) { this.div.remove(); this.div = null; } }
+        setPosition(position) { this.position = position; this.draw(); }
+    };
+}
+
+// `progress` (0-100, optional) adds a third marker interpolated along the route - the vehicle's live
+// position - so a trip actually under way shows where the vehicle is right now, not just the two
+// static endpoints. `heightClass`/`showZoomControl` let the same component serve both the small
+// toggle-open map in a trip list row and the full-width hero map on Home (bigger, with zoom controls
+// since it's the primary thing on screen there rather than an inline extra).
+function RouteMap({ route, progress, heightClass = 'h-48', showZoomControl = false }) {
+    const mapEl = useRef(null);
+    const mapRef = useRef(null);
+    const liveMarkerRef = useRef(null);
+    // The Google Maps script tag loads before this app's own scripts run (see the <head> tag order),
+    // so this is almost always already true on first render - polling here is just cheap insurance
+    // against a slow network rather than something expected to matter in practice.
+    const [mapsReady, setMapsReady] = useState(!!(window.google && window.google.maps));
+
+    useEffect(() => {
+        if (mapsReady) return;
+        const id = setInterval(() => {
+            if (window.google && window.google.maps) { setMapsReady(true); clearInterval(id); }
+        }, 200);
+        return () => clearInterval(id);
+    }, [mapsReady]);
+
+    useEffect(() => {
+        if (!mapEl.current || !mapsReady) return;
+        const [originName, destName] = route.split(' -> ');
+        const origin = LOCATION_COORDS[originName];
+        const dest = LOCATION_COORDS[destName];
+        if (!origin || !dest) return;
+
+        const DotOverlay = makeDotOverlayClass();
+        const toLatLng = ([lat, lng]) => new google.maps.LatLng(lat, lng);
+
+        // scrollWheelZoom:false on the old Leaflet map only blocked wheel-zoom while leaving drag-pan
+        // alone; Google has no such granular flag, so the small inline previews (no zoom control) go
+        // fully static instead - avoids hijacking the page's scroll the moment the cursor crosses one -
+        // while the interactive Home hero map (zoom control shown) stays fully draggable/zoomable.
+        const map = new google.maps.Map(mapEl.current, {
+            center: toLatLng(origin), zoom: 12,
+            disableDefaultUI: true, zoomControl: showZoomControl,
+            gestureHandling: showZoomControl ? 'greedy' : 'none',
+        });
+        mapRef.current = map;
+
+        new DotOverlay(toLatLng(origin), '#10B981', 12, originName).setMap(map);
+        new DotOverlay(toLatLng(dest), '#EF4444', 12, destName).setMap(map);
+
+        // Google has no direct dashArray equivalent - a repeating line-symbol icon over an otherwise
+        // fully-transparent stroke is the documented way to fake one.
+        new google.maps.Polyline({
+            path: [toLatLng(origin), toLatLng(dest)],
+            map, strokeColor: '#3B82F6', strokeOpacity: 0,
+            icons: [{ icon: { path: 'M 0,-1 0,1', strokeOpacity: 1, scale: 3 }, offset: '0', repeat: '10px' }],
+        });
+
+        if (progress != null) {
+            const pos = posAlongRoute(origin, dest, progress);
+            const liveDot = new DotOverlay(toLatLng(pos), '#3B82F6', 16, 'Vehicle - live position');
+            liveDot.setMap(map);
+            liveMarkerRef.current = liveDot;
+        }
+
+        const bounds = new google.maps.LatLngBounds();
+        bounds.extend(toLatLng(origin));
+        bounds.extend(toLatLng(dest));
+        map.fitBounds(bounds, 28);
+
+        return () => { mapRef.current = null; liveMarkerRef.current = null; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [route, showZoomControl, mapsReady]);
+
+    // Progress ticks every couple seconds while a trip is under way (see App's simulated-GPS effect) -
+    // sliding the existing marker rather than tearing down/rebuilding the whole map keeps the pan/zoom
+    // state the driver may have set untouched.
+    useEffect(() => {
+        if (progress == null || !liveMarkerRef.current) return;
+        const [originName, destName] = route.split(' -> ');
+        const pos = posAlongRoute(LOCATION_COORDS[originName], LOCATION_COORDS[destName], progress);
+        if (pos) liveMarkerRef.current.setPosition(new google.maps.LatLng(pos[0], pos[1]));
+    }, [progress, route]);
+
+    return <div ref={mapEl} className={`${heightClass} w-full border-t border-slate-100`} />;
+}
+
+function RoutePath({ route, large }) {
+    const [origin, destination] = route.split(' -> ');
+    const textSize = large ? 'text-base' : 'text-sm';
+    return (
+        <div className="flex gap-3">
+            <div className="flex flex-col items-center pt-1.5">
+                <span className="w-3 h-3 rounded-full bg-emerald-500 ring-4 ring-emerald-100 shrink-0" />
+                <span className="w-0.5 flex-1 bg-slate-200 my-1" />
+                <span className="w-3 h-3 rounded-full bg-red-500 ring-4 ring-red-100 shrink-0" />
+            </div>
+            <div className="flex-1 min-w-0 space-y-3">
+                <div>
+                    <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Pickup</p>
+                    <p className={`${textSize} font-semibold text-slate-800 truncate`}>{origin}</p>
+                </div>
+                <div>
+                    <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Drop-off</p>
+                    <p className={`${textSize} font-semibold text-slate-800 truncate`}>{destination}</p>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// A reassigned trip is no longer actionable - fleet control moved it to a different vehicle, so its
+// route/stakeholder are shown greyed-out/disabled and the only thing the driver can do is acknowledge
+// it. Shared between HomeScreen and MyTripsScreen so the two never drift out of sync on this treatment.
+function ReassignedTripCard({ trip, onAcknowledge }) {
+    return (
+        <div className="bg-amber-50 rounded-2xl border-2 border-amber-400 p-5">
+            <div className="flex justify-between items-start gap-3 mb-4">
+                <div>
+                    <p className="text-3xl font-bold text-amber-900 leading-none tracking-tight">{trip.time}</p>
+                    <p className="text-[11px] text-amber-600 mt-1.5 font-medium">Departure time</p>
+                </div>
+                <Badge status="Reassigned" />
+            </div>
+
+            <div className="opacity-50 pointer-events-none select-none">
+                <RoutePath route={trip.route} large />
+                <div className="flex items-center gap-1.5 text-xs text-slate-500 mt-4 pt-4 border-t border-amber-200">
+                    <Icon name="user" size={13} className="shrink-0" />
+                    <span className="truncate">{trip.stakeholder}</span>
+                </div>
+            </div>
+
+            <div className="mt-4 py-3.5 rounded-xl bg-amber-100 border border-amber-300 text-amber-800 text-sm font-bold text-center tracking-wide">
+                TRIP REASSIGNED
+            </div>
+            <button onClick={onAcknowledge}
+                className="w-full mt-2.5 py-3 rounded-xl bg-amber-600 text-white text-sm font-bold hover:bg-amber-700 active:scale-[0.99] transition">
+                Acknowledge &amp; Return
+            </button>
+        </div>
+    );
+}
+
+// The "trip under way right now" card - large departure time, route, live progress + ETA, an
+// expandable inline route map. Shared between HomeScreen (where it's the whole point of the screen)
+// and MyTripsScreen's Ongoing section, so a driver sees the exact same card either place they find it.
+function OngoingTripCard({ trip, isExpanded, onSelect, onToggleExpand }) {
+    return (
+        <div className="bg-white rounded-2xl border-2 border-brandAccent/40 shadow-cardHover overflow-hidden">
+            <button onClick={onSelect} className="w-full text-left p-5">
+                <div className="flex justify-between items-start gap-3 mb-4">
+                    <div>
+                        <p className="text-3xl font-bold text-slate-800 leading-none tracking-tight">{trip.time}</p>
+                        <p className="text-[11px] text-slate-400 mt-1.5 font-medium">Departure time</p>
+                    </div>
+                    <Badge status={trip.status} />
+                </div>
+
+                <RoutePath route={trip.route} large />
+
+                <div className="flex items-center gap-1.5 text-xs text-slate-500 mt-4 pt-4 border-t border-slate-100">
+                    <Icon name="user" size={13} className="shrink-0" />
+                    <span className="truncate">{trip.stakeholder}</span>
+                </div>
+
+                {trip.sos && (
+                    <p className="text-xs text-red-600 font-semibold mt-3 flex items-center gap-1.5">
+                        <Icon name="alert" size={13} />SOS reported on this trip
+                    </p>
+                )}
+
+                <div className="mt-4">
+                    <div className="flex justify-between text-[11px] font-medium text-slate-500 mb-1.5">
+                        <span>Trip progress</span><span>{trip.progress}%</span>
+                    </div>
+                    <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
+                        <div className="h-full bg-brandAccent transition-all" style={{ width: `${trip.progress}%` }} />
+                    </div>
+                </div>
+
+                {liveEta(trip) && (
+                    <div className="flex justify-between items-center mt-3 pt-3 border-t border-slate-100">
+                        <span className="text-xs text-slate-500">Estimated Arrival</span>
+                        <span className="text-base font-bold text-brandAccent">{liveEta(trip)}</span>
+                    </div>
+                )}
+            </button>
+            <button onClick={(e) => { e.stopPropagation(); onToggleExpand(); }}
+                className="w-full flex items-center justify-center gap-1.5 py-2.5 text-xs font-semibold text-brandAccent border-t border-slate-100 hover:bg-slate-50 transition">
+                {isExpanded ? 'Hide Route Map' : 'View Route Map'}
+            </button>
+            {isExpanded && <RouteMap route={trip.route} />}
+        </div>
+    );
+}
+
+// Home's ongoing-trip hero - modeled on a delivery-tracking reference the user supplied: a full-width
+// live route map up top (the hero), a rounded content sheet overlapping its bottom edge, then trip
+// status/ETA, the route, a vehicle/vendor/cost detail grid (with the fuel gauge + Log Refuel folded
+// into the same card rather than off in a separate one), and the two trip-ending actions (Mark Trip
+// Complete / Report SOS) pinned at the bottom. Everything about this one trip lives on one screen -
+// no tapping through to a separate detail page to see it, unlike the compact list-row treatment
+// OngoingTripCard uses on My Trips.
+function HomeOngoingHero({ trip, fuelProfile, onLogRefuel, onComplete, onOpenSos, onResolveSos }) {
+    const est = tripEstimate(trip.route);
+    const cost = tripCostEstimate(trip);
+    const canSos = !trip.sos;
+
+    return (
+        <div className="animate-in">
+            <div className="relative">
+                <RouteMap route={trip.route} progress={trip.progress} heightClass="h-60" showZoomControl />
+                <div className="absolute top-3 left-3 z-[500]"><Badge status={trip.status} /></div>
+            </div>
+
+            <div className="-mt-5 relative z-[400] bg-bgLight rounded-t-3xl px-4 pt-5 pb-5 space-y-4">
+                {trip.sos && (
+                    <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm flex items-center justify-between gap-3 sos-pulse">
+                        <div className="flex items-center gap-2">
+                            <Icon name="alert" size={18} />
+                            <span className="font-semibold">SOS reported - help is on the way</span>
+                        </div>
+                        <button onClick={onResolveSos} className="text-xs font-semibold underline shrink-0">Mark Safe</button>
+                    </div>
+                )}
+
+                {/* Each of these used to be one big multi-section card (ETA/Progress + Route, then
+                    Vehicle/Vendor/Distance/Cost + Passenger + Fuel all stacked inside a second one) -
+                    split into its own small card per concern instead, so the screen reads as a set of
+                    distinct at-a-glance facts rather than two dense blocks. */}
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-card p-4">
+                    <div className="flex items-start justify-between gap-3">
+                        <div>
+                            <p className="flex items-center gap-1 text-[11px] font-semibold text-slate-400 uppercase tracking-wide">
+                                <Icon name="clock" size={11} />Estimated Arrival
+                            </p>
+                            <p className="text-2xl font-bold text-slate-800 leading-tight mt-0.5">{liveEta(trip) || '—'}</p>
+                        </div>
+                        <div className="text-right shrink-0">
+                            <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide">Progress</p>
+                            <p className="text-2xl font-bold text-brandAccent leading-tight mt-0.5">{trip.progress}%</p>
+                        </div>
+                    </div>
+                    <div className="h-2 rounded-full bg-slate-100 overflow-hidden mt-3">
+                        <div className="h-full bg-brandAccent transition-all" style={{ width: `${trip.progress}%` }} />
+                    </div>
+                </div>
+
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-card p-4">
+                    <RoutePath route={trip.route} large />
+                </div>
+
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-card p-4 grid grid-cols-2 gap-4 text-sm">
+                    <div>
+                        <p className="flex items-center gap-1 text-[10px] text-slate-400 uppercase tracking-wide"><Icon name="truck" size={11} />Vehicle</p>
+                        <p className="font-medium text-slate-800 mt-0.5">{trip.vehicleId}</p>
+                        <p className="text-xs text-slate-500">{trip.type}</p>
+                    </div>
+                    <div>
+                        <p className="flex items-center gap-1 text-[10px] text-slate-400 uppercase tracking-wide"><Icon name="building" size={11} />Vendor</p>
+                        <p className="font-medium text-slate-800 mt-0.5">{trip.vendorName}</p>
+                    </div>
+                    <div>
+                        <p className="flex items-center gap-1 text-[10px] text-slate-400 uppercase tracking-wide"><Icon name="distance" size={11} />Distance</p>
+                        <p className="font-medium text-slate-800 mt-0.5">{est ? `${est.distanceKm} km` : '—'}</p>
+                    </div>
+                    <div>
+                        <p className="flex items-center gap-1 text-[10px] text-slate-400 uppercase tracking-wide"><Icon name="tag" size={11} />Estimated Cost</p>
+                        <p className="font-medium text-slate-800 mt-0.5">{cost != null ? `₹${cost}` : '—'}</p>
+                    </div>
+                </div>
+
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-card p-4">
+                    <p className="flex items-center gap-1 text-[10px] text-slate-400 uppercase tracking-wide"><Icon name="user" size={11} />Passenger / Stakeholder</p>
+                    <p className="font-medium text-slate-800 mt-0.5">{trip.stakeholder}</p>
+                </div>
+
+                {fuelProfile && (
+                    <div className="bg-white rounded-2xl border border-slate-200 shadow-card p-4">
+                        <div className="flex items-center justify-between mb-1.5">
+                            <p className="flex items-center gap-1 text-[10px] text-slate-400 uppercase tracking-wide"><Icon name="droplet" size={11} />Fuel</p>
+                            <button onClick={onLogRefuel} className="text-[11px] font-semibold text-brandAccent hover:underline">Log Refuel</button>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <div className="flex-1 h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                                <div className={`h-full rounded-full transition-all ${fuelProfile.fuelLevel < 20 ? 'bg-red-500' : fuelProfile.fuelLevel < 50 ? 'bg-amber-500' : 'bg-emerald-500'}`}
+                                    style={{ width: `${fuelProfile.fuelLevel}%` }} />
+                            </div>
+                            <span className="text-xs font-semibold text-slate-600 w-9 text-right">{fuelProfile.fuelLevel}%</span>
+                        </div>
+                        <p className="text-[10px] text-slate-400 mt-1">
+                            {Math.round(fuelProfile.kmSinceRefuel)} / {fuelProfile.refuelCycleKm} km &middot; Last {fuelProfile.lastRefuelDate || '—'}{fuelProfile.lastRefuelSource ? ` (${fuelProfile.lastRefuelSource})` : ''}
+                        </p>
+                        {fuelProfile.dueForRefuel && (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 mt-1">
+                                <Icon name="alert" size={10} />Due for refuel
+                            </span>
+                        )}
+                    </div>
+                )}
+
+                <div className="flex items-center gap-3">
+                    <button onClick={onComplete}
+                        className="flex-1 py-3.5 rounded-full bg-brandBlue text-white text-sm font-bold hover:bg-slate-800 active:scale-[0.99] transition flex items-center justify-center gap-2 shadow-sm">
+                        <Icon name="check" size={16} />Mark Trip Complete
+                    </button>
+                    {canSos && (
+                        <button onClick={onOpenSos} title="Report Emergency / SOS" aria-label="Report Emergency / SOS"
+                            className="w-14 h-14 rounded-full bg-red-600 text-white flex items-center justify-center shrink-0 hover:bg-red-700 active:scale-[0.97] transition shadow-sm">
+                            <Icon name="alert" size={22} />
+                        </button>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// A slim, always-visible strip naming whichever vehicle this driver is currently driving - unlike
+// everything else on Home, this isn't conditional on a trip being under way, so a driver can always
+// glance at Home and know what they're assigned to right now even between trips. The vehicle's own
+// identity (name + reg no) is the hero here - "Managed by Fleet Coordinator" is just attribution, so
+// it's pushed to the bottom as a small, quiet footnote rather than competing with the label up top.
+function CurrentVehicleCard({ driver, vehicleType }) {
+    return (
+        <div className="p-4 pb-0 animate-in">
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-card p-4 flex items-center gap-3">
+                <div className="w-11 h-11 rounded-xl bg-brandAccent/10 text-brandAccent flex items-center justify-center shrink-0">
+                    <Icon name="truck" size={20} />
+                </div>
+                <div className="min-w-0 flex-1">
+                    <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Current Vehicle Assigned</p>
+                    <p className="font-bold text-slate-800 truncate">{vehicleNameFor(vehicleType, driver.vehicleId)}</p>
+                    <p className="text-sm text-slate-500 font-mono truncate">{driver.vehicleId} &middot; {vehicleRegNoFor(driver.vehicleId)}</p>
+                    <p className="text-[10px] text-slate-300 mt-1.5">Managed by Fleet Coordinator</p>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// Home tab - deliberately narrow: the driver's current vehicle (always visible, see
+// CurrentVehicleCard), a reassignment notice (if any, since it's blocking and needs acknowledgement
+// no matter what else is going on), and whichever single trip is actually under way right now, shown
+// in full via HomeOngoingHero. Everything else (upcoming, completed, the full list) lives on My
+// Trips - Home is "what's happening right now", not a second copy of the full trip list.
+function HomeScreen({ trips, assignments, fuelState, driver, vehicleType, onAcknowledge, onComplete, onOpenSos, onResolveSos, onLogRefuel, onGoToTrips }) {
+    const reassignedTrips = trips.filter(t => t.reassigned);
+    const ongoing = trips.find(t => !t.reassigned && (t.status === 'In Transit' || t.status === 'Delayed')) || null;
+    const nextUpcoming = trips.filter(t => !t.reassigned && t.status === 'Scheduled').sort((a, b) => a.time.localeCompare(b.time))[0];
+
+    return (
+        <div>
+            <CurrentVehicleCard driver={driver} vehicleType={vehicleType} />
+
+            {reassignedTrips.length > 0 && (
+                <div className="p-4 space-y-4 animate-in">
+                    {reassignedTrips.map(t => <ReassignedTripCard key={t.id} trip={t} onAcknowledge={() => onAcknowledge(t.id)} />)}
+                </div>
+            )}
+
+            {ongoing ? (
+                <div className="mt-4">
+                    <HomeOngoingHero trip={ongoing} fuelProfile={vehicleFuelProfile(ongoing, assignments, fuelState)}
+                        onLogRefuel={() => onLogRefuel(ongoing.vehicleId)} onComplete={() => onComplete(ongoing)}
+                        onOpenSos={() => onOpenSos(ongoing.id)} onResolveSos={() => onResolveSos(ongoing.id)} />
+                </div>
+            ) : reassignedTrips.length === 0 && (
+                <div className="p-4">
+                    <div className="text-center py-14">
+                        <div className="w-14 h-14 rounded-2xl bg-slate-100 text-slate-400 flex items-center justify-center mx-auto mb-3">
+                            <Icon name="truck" size={26} />
+                        </div>
+                        <p className="font-medium text-slate-500">No trip in progress</p>
+                        {nextUpcoming ? (
+                            <>
+                                <p className="text-sm text-slate-400 mt-1">Your next trip departs at <span className="font-semibold text-slate-600">{nextUpcoming.time}</span>.</p>
+                                <button onClick={onGoToTrips} className="mt-4 text-sm font-semibold text-brandAccent hover:underline">Go to My Trips to start it &rarr;</button>
+                            </>
+                        ) : (
+                            <p className="text-sm text-slate-400 mt-1">You don't have any trips scheduled right now.</p>
+                        )}
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+// My Trips tab - the complete list, every trip grouped by where it stands (Reassigned / Ongoing /
+// Upcoming / Completed). The Ongoing trip shown here is the same OngoingTripCard as Home's, just
+// sitting alongside the rest of the list instead of being the only thing on screen.
+function MyTripsScreen({ trips, onSelect, onStartTrip, hasActiveTrip, onAcknowledge }) {
+    // Tracks which single trip's route map is currently expanded inline. Starting a trip auto-expands
+    // it; the id keeps matching the same trip even after it moves from the Upcoming section into
+    // Ongoing on the next render.
+    const [expandedTripId, setExpandedTripId] = useState(null);
+    const toggleExpanded = (id) => setExpandedTripId(curr => (curr === id ? null : id));
+
+    if (trips.length === 0) {
+        return (
+            <div className="p-8 text-center text-slate-400">
+                <p className="font-medium text-slate-500">No trips assigned</p>
+                <p className="text-sm mt-1">You don't have any trips scheduled right now.</p>
+            </div>
+        );
+    }
+
+    // A reassigned trip is pulled out of its normal Ongoing/Upcoming grouping entirely - it's no
+    // longer actionable, it needs to be impossible to miss, so it gets its own section up top.
+    const reassignedTrips = trips.filter(t => t.reassigned);
+    // "Ongoing" covers both In Transit and Delayed - either way the trip has been started and is
+    // actively running, so it deserves top billing over trips that haven't started yet.
+    const ongoingTrips = trips.filter(t => !t.reassigned && (t.status === 'In Transit' || t.status === 'Delayed'));
+    const upcomingTrips = trips.filter(t => !t.reassigned && t.status === 'Scheduled').sort((a, b) => a.time.localeCompare(b.time));
+    const pastTrips = trips.filter(t => !t.reassigned && t.status === 'Completed').sort((a, b) => a.time.localeCompare(b.time));
+
+    return (
+        <div className="p-4 space-y-6 animate-in">
+            {reassignedTrips.length > 0 && (
+                <div>
+                    <h4 className="text-xs font-semibold text-amber-600 uppercase tracking-wide mb-2 flex items-center gap-2">
+                        <Icon name="alert" size={14} />Trip Reassigned
+                    </h4>
+                    <div className="space-y-4">
+                        {reassignedTrips.map(t => <ReassignedTripCard key={t.id} trip={t} onAcknowledge={() => onAcknowledge(t.id)} />)}
+                    </div>
+                </div>
+            )}
+
+            {ongoingTrips.length > 0 && (
+                <div>
+                    <h4 className="text-xs font-semibold text-emerald-600 uppercase tracking-wide mb-2 flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />Ongoing Trip
+                    </h4>
+                    <div className="space-y-4">
+                        {ongoingTrips.map(t => (
+                            <OngoingTripCard key={t.id} trip={t} isExpanded={expandedTripId === t.id}
+                                onSelect={() => onSelect(t.id)} onToggleExpand={() => toggleExpanded(t.id)} />
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            {upcomingTrips.length > 0 && (
+                <div>
+                    <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Upcoming Trips</h4>
+                    <div className="space-y-4">
+                        {upcomingTrips.map(t => (
+                            <div key={t.id} className="bg-white rounded-2xl border border-slate-200 shadow-card p-5">
+                                <button onClick={() => onSelect(t.id)} className="w-full text-left">
+                                    <div className="flex justify-between items-start gap-3 mb-4">
+                                        <div>
+                                            <p className="text-3xl font-bold text-slate-800 leading-none tracking-tight">{t.time}</p>
+                                            <p className="text-[11px] text-slate-400 mt-1.5 font-medium">Departure time</p>
+                                        </div>
+                                        <Badge status={t.status} />
+                                    </div>
+
+                                    <RoutePath route={t.route} large />
+
+                                    <div className="flex items-center gap-1.5 text-xs text-slate-500 mt-4 pt-4 border-t border-slate-100">
+                                        <Icon name="user" size={13} className="shrink-0" />
+                                        <span className="truncate">{t.stakeholder}</span>
+                                    </div>
+                                    {tripEstimate(t.route) && (
+                                        <div className="flex items-center gap-1.5 text-xs text-slate-500 mt-2">
+                                            <span className="font-semibold text-slate-700">~{tripEstimate(t.route).durationMin} min</span>
+                                            <span className="text-slate-300">·</span>
+                                            <span>{tripEstimate(t.route).distanceKm} km</span>
+                                        </div>
+                                    )}
+                                </button>
+
+                                {hasActiveTrip ? (
+                                    <div className="w-full mt-4 py-3.5 rounded-xl bg-slate-100 text-slate-400 text-sm font-semibold flex items-center justify-center gap-2">
+                                        <Icon name="lock" size={15} />Finish current trip first
+                                    </div>
+                                ) : (
+                                    <button onClick={() => onStartTrip(t, () => setExpandedTripId(t.id))}
+                                        className="w-full mt-4 py-3.5 rounded-xl bg-brandBlue text-white text-sm font-bold hover:bg-slate-800 active:scale-[0.99] transition flex items-center justify-center gap-2 shadow-sm">
+                                        <Icon name="play" size={16} />Start Trip
+                                    </button>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            {pastTrips.length > 0 && (
+                <div>
+                    <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Completed</h4>
+                    <div className="space-y-2">
+                        {pastTrips.map(t => (
+                            <button key={t.id} onClick={() => onSelect(t.id)}
+                                className="w-full text-left bg-white rounded-xl border border-slate-100 p-3 opacity-80 hover:opacity-100 transition">
+                                <div className="flex justify-between items-center gap-2">
+                                    <p className="text-sm font-medium text-slate-600 truncate">{t.route}</p>
+                                    <Badge status={t.status} />
+                                </div>
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+function TripDetailScreen({ trip, hasActiveTrip, onStart, onComplete, onOpenSos, onResolveSos, onAcknowledge, fuelProfile, onLogRefuel }) {
+    if (trip.reassigned) {
+        return (
+            <div className="p-4 animate-in">
+                <div className="bg-amber-50 rounded-2xl border-2 border-amber-400 p-5">
+                    <div className="flex items-center gap-2 text-amber-700 mb-3">
+                        <Icon name="alert" size={22} />
+                        <h3 className="font-bold text-lg">Trip Reassigned</h3>
+                    </div>
+                    <p className="text-sm text-amber-800 mb-4">
+                        Fleet control has moved this trip to a different vehicle. Do not proceed to the pickup point for this trip.
+                    </p>
+
+                    <div className="flex justify-between items-center mb-3">
+                        <Badge status="Reassigned" />
+                        <span className="font-mono text-xs font-bold text-amber-700">{trip.time}</span>
+                    </div>
+                    <div className="opacity-50 pointer-events-none select-none mb-4">
+                        <RoutePath route={trip.route} large />
+                    </div>
+
+                    <div className="py-3.5 rounded-xl bg-amber-100 border border-amber-300 text-amber-800 text-sm font-bold text-center tracking-wide mb-3">
+                        TRIP REASSIGNED
+                    </div>
+                    <button onClick={onAcknowledge}
+                        className="w-full py-3.5 rounded-xl bg-amber-600 text-white text-sm font-bold hover:bg-amber-700 active:scale-[0.99] transition">
+                        Acknowledge &amp; Return
+                    </button>
+                </div>
+            </div>
+        );
+    }
+
+    const isScheduled = trip.status === 'Scheduled';
+    const isRunning = trip.status === 'In Transit' || trip.status === 'Delayed';
+    // A Scheduled trip can only be started if no other trip for this driver is already running.
+    const startBlocked = isScheduled && hasActiveTrip;
+    const action = isScheduled && !startBlocked
+        ? { label: 'Start Trip', icon: 'play', run: onStart }
+        : isRunning
+            ? { label: 'Mark Trip Complete', icon: 'check', run: onComplete }
+            : null;
+    const canSos = isRunning && !trip.sos;
+
+    return (
+        <div className="p-4 space-y-4 animate-in">
+            {trip.sos && (
+                <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm flex items-center justify-between gap-3 sos-pulse">
+                    <div className="flex items-center gap-2">
+                        <Icon name="alert" size={18} />
+                        <span className="font-semibold">SOS reported - help is on the way</span>
+                    </div>
+                    <button onClick={onResolveSos} className="text-xs font-semibold underline shrink-0">Mark Safe</button>
+                </div>
+            )}
+
+            <div className="bg-white rounded-xl border border-slate-200 shadow-card p-4">
+                <div className="flex justify-between items-center mb-3">
+                    <Badge status={trip.status} />
+                    <span className="font-mono text-xs font-bold text-slate-500">{trip.time}</span>
+                </div>
+                <RoutePath route={trip.route} large />
+
+                {isScheduled && tripEstimate(trip.route) && (
+                    <div className="flex items-center gap-1.5 text-xs text-slate-500 mt-3 pt-3 border-t border-slate-100">
+                        <span className="font-semibold text-slate-700">~{tripEstimate(trip.route).durationMin} min</span>
+                        <span className="text-slate-300">·</span>
+                        <span>{tripEstimate(trip.route).distanceKm} km estimated</span>
+                    </div>
+                )}
+
+                {isRunning && (
+                    <div className="mt-4">
+                        <div className="flex justify-between text-xs text-slate-500 mb-1">
+                            <span>Trip progress</span><span>{trip.progress}%</span>
+                        </div>
+                        <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
+                            <div className="h-full bg-brandAccent transition-all" style={{ width: `${trip.progress}%` }} />
+                        </div>
+                        {liveEta(trip) && (
+                            <div className="flex justify-between items-center mt-3 pt-3 border-t border-slate-100">
+                                <span className="text-xs text-slate-500">Estimated Arrival</span>
+                                <span className="text-base font-bold text-brandAccent">{liveEta(trip)}</span>
+                            </div>
+                        )}
+                    </div>
+                )}
+            </div>
+
+            <div className="bg-white rounded-xl border border-slate-200 shadow-card p-4 grid grid-cols-2 gap-4 text-sm">
+                <div>
+                    <p className="text-[10px] text-slate-400 uppercase tracking-wide">Vehicle</p>
+                    <p className="font-medium text-slate-800">{trip.vehicleId}</p>
+                    <p className="text-xs text-slate-500">{trip.type}</p>
+                </div>
+                <div>
+                    <p className="text-[10px] text-slate-400 uppercase tracking-wide">Vendor</p>
+                    <p className="font-medium text-slate-800">{trip.vendorName}</p>
+                </div>
+                <div className="col-span-2">
+                    <p className="text-[10px] text-slate-400 uppercase tracking-wide">Passenger / Stakeholder</p>
+                    <p className="font-medium text-slate-800">{trip.stakeholder}</p>
+                </div>
+
+                {fuelProfile && (
+                    <div className="col-span-2 pt-3 border-t border-slate-100">
+                        <div className="flex items-center justify-between mb-1.5">
+                            <p className="text-[10px] text-slate-400 uppercase tracking-wide">Fuel</p>
+                            <button onClick={onLogRefuel} className="text-[11px] font-semibold text-brandAccent hover:underline">Log Refuel</button>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <div className="flex-1 h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                                <div className={`h-full rounded-full transition-all ${fuelProfile.fuelLevel < 20 ? 'bg-red-500' : fuelProfile.fuelLevel < 50 ? 'bg-amber-500' : 'bg-emerald-500'}`}
+                                    style={{ width: `${fuelProfile.fuelLevel}%` }} />
+                            </div>
+                            <span className="text-xs font-semibold text-slate-600 w-9 text-right">{fuelProfile.fuelLevel}%</span>
+                        </div>
+                        <p className="text-[10px] text-slate-400 mt-1">
+                            {Math.round(fuelProfile.kmSinceRefuel)} / {fuelProfile.refuelCycleKm} km &middot; Last {fuelProfile.lastRefuelDate || '—'}{fuelProfile.lastRefuelSource ? ` (${fuelProfile.lastRefuelSource})` : ''}
+                        </p>
+                        {fuelProfile.dueForRefuel && (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 mt-1">
+                                <Icon name="alert" size={10} />Due for refuel
+                            </span>
+                        )}
+                    </div>
+                )}
+            </div>
+
+            {startBlocked && (
+                <div className="w-full py-3 rounded-xl bg-slate-100 text-slate-400 text-sm font-semibold flex items-center justify-center gap-2">
+                    <Icon name="lock" size={15} />Finish your ongoing trip before starting this one
+                </div>
+            )}
+
+            {action && (
+                <button onClick={action.run} className="w-full py-3.5 rounded-xl bg-brandBlue text-white text-sm font-bold hover:bg-slate-800 active:scale-[0.99] transition flex items-center justify-center gap-2 shadow-sm">
+                    <Icon name={action.icon} size={16} />{action.label}
+                </button>
+            )}
+
+            {canSos && (
+                <button onClick={onOpenSos} className="w-full py-3 rounded-xl bg-red-600 text-white text-sm font-semibold hover:bg-red-700 transition flex items-center justify-center gap-2">
+                    <Icon name="alert" size={16} />Report Emergency / SOS
+                </button>
+            )}
+
+            {trip.status === 'Completed' && (
+                <div className="text-center py-4 text-emerald-600 flex flex-col items-center gap-1">
+                    <Icon name="check" size={28} />
+                    <p className="text-sm font-semibold">Trip completed</p>
+                </div>
+            )}
+        </div>
+    );
+}
+
+function ProfileScreen({ driver, vehicleType, onLogout }) {
+    const expired = driver.status === 'Expired';
+    return (
+        <div className="p-4 space-y-4 animate-in">
+            <div className="bg-white rounded-xl border border-slate-200 shadow-card p-5 text-center">
+                <div className="w-16 h-16 rounded-full bg-brandAccent/10 text-brandAccent flex items-center justify-center mx-auto mb-3 text-xl font-bold">
+                    {driver.name.split(' ').map(n => n[0]).join('')}
+                </div>
+                <p className="font-semibold text-slate-800">{driver.name}</p>
+                <p className="text-xs text-slate-500">{driver.vendor}</p>
+            </div>
+
+            <div className="bg-white rounded-xl border border-slate-200 shadow-card divide-y divide-slate-100">
+                <div className="px-4 py-3 flex justify-between items-center text-sm">
+                    <span className="text-slate-500">Assigned Vehicle</span>
+                    <span className="text-right">
+                        <span className="block font-medium text-slate-800">{vehicleNameFor(vehicleType, driver.vehicleId)}</span>
+                        <span className="block text-[11px] font-mono text-slate-400">{driver.vehicleId} &middot; {vehicleRegNoFor(driver.vehicleId)}</span>
+                    </span>
+                </div>
+                <div className="px-4 py-3 flex justify-between text-sm">
+                    <span className="text-slate-500">Phone</span>
+                    <span className="font-medium text-slate-800">{driver.phone}</span>
+                </div>
+                <div className="px-4 py-3 flex justify-between text-sm">
+                    <span className="text-slate-500">License ID</span>
+                    <span className="font-mono text-xs text-slate-800">{driver.licenseId}</span>
+                </div>
+                <div className="px-4 py-3 flex justify-between items-center text-sm">
+                    <span className="text-slate-500">License Expiry</span>
+                    <span className="flex items-center gap-2">
+                        <span className="font-medium text-slate-800">{driver.licenseExpiry}</span>
+                        <Badge status={driver.status} />
+                    </span>
+                </div>
+            </div>
+
+            {expired && (
+                <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-xs">
+                    Your license has expired. Please contact your vendor coordinator before accepting new trips.
+                </div>
+            )}
+
+            <button onClick={onLogout} className="w-full py-3 rounded-xl border border-slate-200 text-slate-600 text-sm font-semibold hover:bg-slate-50 transition flex items-center justify-center gap-2">
+                <Icon name="logout" size={16} />Logout
+            </button>
+        </div>
+    );
+}
+
+// Every fixed-position popup in this app (SosModal, VehicleReassignedModal, GeofenceModal) portals
+// straight to document.body instead of rendering in place. The app's own layout nests them many
+// levels deep (App's h-screen/overflow-hidden frame -> flex-col -> flex-1/overflow-y-auto screen
+// area -> whatever screen is active), and `position: fixed` inside stacked scrolling/overflow
+// containers is a known trouble spot on mobile Safari in particular - a fixed element can end up
+// visually clipped to or detached from an ancestor's box instead of the real viewport. Rendering
+// the popup as a sibling of #root sidesteps all of that: it's fixed relative to the actual window,
+// full stop, regardless of anything going on in the component tree that mounted it.
+function ModalPortal({ children }) {
+    return ReactDOM.createPortal(children, document.body);
+}
+
+function SosModal({ open, onClose, onSubmit }) {
+    const [message, setMessage] = useState('');
+    if (!open) return null;
+    return (
+        <ModalPortal>
+            <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/40" onClick={onClose}>
+                <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm max-h-[85vh] overflow-y-auto p-5" onClick={e => e.stopPropagation()}>
+                    <div className="flex items-center gap-2 text-red-600 mb-2">
+                        <Icon name="alert" size={22} /><h3 className="font-bold text-lg">Report Emergency</h3>
+                    </div>
+                    <p className="text-sm text-slate-500 mb-3">This alerts fleet control immediately. Only use for genuine emergencies.</p>
+                    <textarea value={message} onChange={e => setMessage(e.target.value)} rows={3} placeholder="Briefly describe what's happening..."
+                        className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg mb-4 focus:outline-none focus:ring-2 focus:ring-red-300 focus:border-red-400" />
+                    <div className="flex gap-2">
+                        <button onClick={() => { onSubmit(message); setMessage(''); }}
+                            className="flex-1 py-2.5 rounded-lg bg-red-600 text-white text-sm font-semibold hover:bg-red-700 transition">
+                            Send SOS
+                        </button>
+                        <button onClick={onClose} className="px-4 py-2.5 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 transition">
+                            Cancel
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </ModalPortal>
+    );
+}
+
+// Distinct from a *trip* reassignment (RoutePath/ReassignedTripCard etc.) - this is the admin swapping
+// which physical vehicle this driver is driving, going forward, across all their trips. It's a
+// heads-up notification rather than something blocking a specific trip, so it's a one-time modal the
+// driver dismisses rather than a persistent banner: appears the moment it happens, blocks interaction
+// until acknowledged (so it can't be missed), then is gone for good - the effect (every upcoming/
+// ongoing trip now showing the new vehicle) is what persists, not the notice itself.
+function VehicleReassignedModal({ reassignment, onAcknowledge }) {
+    if (!reassignment || reassignment.acknowledged) return null;
+    // Vehicle name leads (the thing a driver actually recognizes their vehicle by), the raw id follows
+    // underneath in smaller/muted text - never the id alone as the primary label.
+    const fromName = vehicleNameFor(reassignment.vehicleType, reassignment.fromVehicleId);
+    const toName = vehicleNameFor(reassignment.vehicleType, reassignment.toVehicleId);
+    return (
+        <ModalPortal>
+            <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/40">
+                <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm max-h-[85vh] overflow-y-auto p-5">
+                    <div className="flex items-center gap-2 text-brandAccent mb-2">
+                        <Icon name="truck" size={22} /><h3 className="font-bold text-lg text-slate-800">Vehicle Reassigned</h3>
+                    </div>
+                    <p className="text-sm text-slate-500 mb-4">
+                        Fleet control has changed your assigned vehicle. This applies to all your upcoming and ongoing trips.
+                    </p>
+                    <div className="flex items-center gap-3 bg-slate-50 border border-slate-200 rounded-xl p-3 mb-4">
+                        <div className="flex-1 text-center min-w-0">
+                            <p className="text-[10px] text-slate-400 uppercase tracking-wide">Previous</p>
+                            <p className="text-sm font-semibold text-slate-400 line-through truncate">{fromName}</p>
+                            <p className="text-[11px] font-mono text-slate-300 truncate">{reassignment.fromVehicleId} &middot; {vehicleRegNoFor(reassignment.fromVehicleId)}</p>
+                        </div>
+                        <span className="text-slate-300 shrink-0">&rarr;</span>
+                        <div className="flex-1 text-center min-w-0">
+                            <p className="text-[10px] text-slate-400 uppercase tracking-wide">New Vehicle</p>
+                            <p className="text-sm font-bold text-brandAccent truncate">{toName}</p>
+                            <p className="text-[11px] font-mono text-slate-400 truncate">{reassignment.toVehicleId} &middot; {vehicleRegNoFor(reassignment.toVehicleId)}</p>
+                        </div>
+                    </div>
+                    <button onClick={onAcknowledge} className="w-full py-2.5 rounded-lg bg-brandBlue text-white text-sm font-semibold hover:bg-slate-800 transition">
+                        Got it
+                    </button>
+                </div>
+            </div>
+        </ModalPortal>
+    );
+}
+
+// The three states a Start Trip/Mark Trip Complete attempt can be in while geo-fencing is on:
+// checking (waiting on the device's location fix), blocked (got a fix, but it's outside the radius),
+// or error (couldn't get a fix at all - permission denied, unsupported, timed out). Nothing renders
+// when there's no attempt in flight - the modal only ever appears for the few seconds a check is
+// actually happening, or when it's actually failed, never as a persistent status display.
+function GeofenceModal({ check, onRetry, onCancel }) {
+    if (!check) return null;
+    const actionLabel = check.action === 'start' ? 'start this trip' : 'mark this trip complete';
+    const radiusM = Math.round(GEOFENCE_RADIUS_KM * 1000);
+    return (
+        <ModalPortal>
+            <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/40">
+                <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm max-h-[85vh] overflow-y-auto p-5">
+                    {check.status === 'checking' && (
+                        <div className="text-center py-3">
+                            <div className="w-9 h-9 border-[3px] border-slate-200 border-t-brandAccent rounded-full animate-spin mx-auto mb-3" />
+                            <p className="text-sm font-semibold text-slate-700">Checking your location&hellip;</p>
+                            <p className="text-xs text-slate-400 mt-1">Confirming you're near {check.locationName}</p>
+                        </div>
+                    )}
+
+                    {check.status === 'blocked' && (
+                        <>
+                            <div className="flex items-center gap-2 text-amber-600 mb-2">
+                                <Icon name="lock" size={20} /><h3 className="font-bold text-lg text-slate-800">Too Far to {check.action === 'start' ? 'Start' : 'Complete'}</h3>
+                            </div>
+                            <p className="text-sm text-slate-500 mb-4">
+                                Geo-fencing is on for this account - you need to be within {radiusM}m of <strong className="text-slate-700">{check.locationName}</strong> to {actionLabel}.
+                                You're currently about <strong className="text-slate-700">{check.distanceKm < 1 ? `${Math.round(check.distanceKm * 1000)}m` : `${check.distanceKm.toFixed(1)} km`}</strong> away.
+                            </p>
+                            <div className="flex gap-2">
+                                <button onClick={onRetry} className="flex-1 py-2.5 rounded-lg bg-brandBlue text-white text-sm font-semibold hover:bg-slate-800 transition">Check Again</button>
+                                <button onClick={onCancel} className="px-4 py-2.5 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 transition">Cancel</button>
+                            </div>
+                        </>
+                    )}
+
+                    {check.status === 'error' && (
+                        <>
+                            <div className="flex items-center gap-2 text-red-600 mb-2">
+                                <Icon name="alert" size={20} /><h3 className="font-bold text-lg text-slate-800">Location Unavailable</h3>
+                            </div>
+                            <p className="text-sm text-slate-500 mb-4">
+                                {check.message} Geo-fencing is on for this account, so location access is required to {actionLabel}.
+                            </p>
+                            <div className="flex gap-2">
+                                <button onClick={onRetry} className="flex-1 py-2.5 rounded-lg bg-brandBlue text-white text-sm font-semibold hover:bg-slate-800 transition">Try Again</button>
+                                <button onClick={onCancel} className="px-4 py-2.5 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 transition">Cancel</button>
+                            </div>
+                        </>
+                    )}
+                </div>
+            </div>
+        </ModalPortal>
+    );
+}
+
+function App() {
+    const [loggedIn, setLoggedIn] = useState(null);
+    const [activeTab, setActiveTab] = useState('home');
+    const [selectedTripId, setSelectedTripId] = useState(null);
+    const [assignments, setAssignments] = useState(() => DRIVER_APP_DATA.assignments.map(a => ({ ...a })));
+    const [sosAlerts, setSosAlerts] = useState(() => DRIVER_APP_DATA.sosAlerts.map(s => ({ ...s })));
+    const [sosModalOpen, setSosModalOpen] = useState(false);
+    // Which trip the SOS modal is currently reporting for - Home's hero and Trip Details both open
+    // the same modal for whichever trip they're each showing, so this can't just assume "selectedTrip"
+    // the way it used to when the modal only ever opened from the detail screen.
+    const [sosTargetId, setSosTargetId] = useState(null);
+    // { fromVehicleId, toVehicleId, acknowledged } for a pending "your vehicle changed" notice, or
+    // null when there isn't one. Distinct from a per-trip `reassigned` flag - see VehicleReassignedModal.
+    const [vehicleReassignment, setVehicleReassignment] = useState(null);
+    // vehicleId -> { fuelCheckpointKm, lastRefuelDate, lastRefuelSource } - see vehicleFuelProfile above.
+    const [fuelState, setFuelState] = useState({});
+    // Whether Start Trip/Mark Trip Complete require the driver to actually be near the pickup/
+    // drop-off point - a policy the admin panel controls, not this app. There's no shared backend
+    // between the two files, so this reads a localStorage key the admin panel writes to (see
+    // toggleGeoFencing in ACT Travel Prototype.html's window.AdminTab) - defaults on when that key
+    // has never been set (e.g. this app opened on its own, or from a plain file:// document where the
+    // two files can't share storage at all).
+    const [geoFencingEnabled, setGeoFencingEnabled] = useState(() => {
+        try {
+            const stored = localStorage.getItem(GEOFENCING_STORAGE_KEY);
+            return stored === null ? true : stored === 'true';
+        } catch (e) { return true; }
+    });
+    // In-flight/blocked Start Trip or Mark Trip Complete attempt - { trip, action, onSuccess, status,
+    // distanceKm?, message? } or null when nothing's being checked. See attemptStartTrip/
+    // attemptCompleteTrip and GeofenceModal below.
+    const [geofenceCheck, setGeofenceCheck] = useState(null);
+    // Demo-only stand-in for "the device's real GPS happens to be at the venue" - see the toggle
+    // button in TopBar. Only changes where runGeofenceCheck gets its position reading from, not
+    // whether the check runs at all (that's still geoFencingEnabled, above).
+    const [simulateAtLocation, setSimulateAtLocation] = useState(false);
+
+    // Picks up a geo-fencing toggle from the admin panel live, if the two happen to be open in tabs
+    // sharing the same browser storage (same origin) right now - 'storage' only fires for changes made
+    // in another document, never the tab that made them, which is exactly the case this is for.
+    useEffect(() => {
+        const onStorage = (e) => {
+            if (e.key !== GEOFENCING_STORAGE_KEY) return;
+            setGeoFencingEnabled(e.newValue === null ? true : e.newValue === 'true');
+        };
+        window.addEventListener('storage', onStorage);
+        return () => window.removeEventListener('storage', onStorage);
+    }, []);
+
+    // Simulate live movement for whichever trip is currently "In Transit" - a stand-in for real GPS.
+    useEffect(() => {
+        const id = setInterval(() => {
+            setAssignments(list => list.map(a =>
+                a.status === 'In Transit' && a.progress < 96 ? { ...a, progress: Math.min(96, a.progress + 2) } : a
+            ));
+        }, 1800);
+        return () => clearInterval(id);
+    }, []);
+
+    if (!loggedIn) {
+        return <LoginScreen drivers={DRIVER_APP_DATA.drivers} onLogin={setLoggedIn} />;
+    }
+
+    // Once a reassignment has been acknowledged the trip is gone for good from this driver's list -
+    // it's no longer theirs, so it shouldn't linger anywhere on their screen.
+    const myTrips = assignments.filter(a => a.driver === loggedIn.name && !(a.reassigned && a.acknowledged));
+    const selectedTrip = myTrips.find(t => t.id === selectedTripId) || null;
+    // A driver can only physically be on one trip at a time - block starting a new one while
+    // another is still In Transit / Delayed. A reassigned trip is no longer actionable, so it
+    // doesn't count - the driver should be free to pick up something else.
+    const hasActiveTrip = myTrips.some(t => !t.reassigned && (t.status === 'In Transit' || t.status === 'Delayed'));
+    // The vehicle "type" (e.g. "Bus (40)") isn't stored on the driver record itself, only on each
+    // trip - so it's read off whichever trip actually matches the driver's current vehicle id, falling
+    // back to any trip at all if none match yet (e.g. right after a reassignment, before any new trip
+    // data exists for that id). Shared by the Home vehicle card and Profile's Assigned Vehicle row so
+    // both resolve the exact same model name for the same vehicle.
+    const currentVehicleType = (myTrips.find(t => t.vehicleId === loggedIn.vehicleId) || myTrips[0])?.type || null;
+
+    const updateTrip = (id, patch) => setAssignments(list => list.map(a => a.id === id ? { ...a, ...patch } : a));
+
+    const startTrip = (id) => {
+        if (hasActiveTrip) return;
+        updateTrip(id, { status: 'In Transit', progress: 5 });
+    };
+    const completeTrip = (id) => updateTrip(id, { status: 'Completed', progress: 100 });
+
+    // Runs one geo-fencing check for `trip` and either performs the action immediately (distance is
+    // within GEOFENCE_RADIUS_KM of the relevant point) or leaves `geofenceCheck` set to whatever went
+    // wrong, for GeofenceModal to show. `onSuccess` only fires once the action has actually gone
+    // through - callers use it for follow-up UI that should never happen for a blocked/failed attempt
+    // (e.g. auto-expanding the route map after a trip that actually started).
+    const runGeofenceCheck = async (trip, action, onSuccess) => {
+        const [originName, destName] = trip.route.split(' -> ');
+        const targetName = action === 'start' ? originName : destName;
+        const targetCoords = LOCATION_COORDS[targetName];
+        setGeofenceCheck({ trip, action, onSuccess, status: 'checking', locationName: targetName });
+        try {
+            // Demo mode reports the driver as exactly at the target point instead of asking the
+            // device for its real GPS fix - same brief delay a real fix would take, so "Checking your
+            // location..." still shows before it resolves, rather than snapping straight to success.
+            const myCoords = simulateAtLocation
+                ? await new Promise(resolve => setTimeout(() => resolve(targetCoords || [0, 0]), 900))
+                : await getCurrentPositionAsync();
+            const distanceKm = targetCoords ? haversineKm(myCoords, targetCoords) : 0;
+            if (distanceKm <= GEOFENCE_RADIUS_KM) {
+                setGeofenceCheck(null);
+                if (action === 'start') startTrip(trip.id); else completeTrip(trip.id);
+                onSuccess && onSuccess();
+            } else {
+                setGeofenceCheck({ trip, action, onSuccess, status: 'blocked', locationName: targetName, distanceKm });
+            }
+        } catch (err) {
+            setGeofenceCheck({ trip, action, onSuccess, status: 'error', locationName: targetName, message: err.message });
+        }
+    };
+
+    // The gate every Start Trip / Mark Trip Complete button now goes through instead of calling
+    // startTrip/completeTrip directly - skips straight to the real action when geo-fencing is off (the
+    // admin panel's toggle), so turning it off genuinely removes the location requirement rather than
+    // just hiding the modal on an already-passing check.
+    const attemptStartTrip = (trip, onSuccess) => {
+        if (!geoFencingEnabled) { startTrip(trip.id); onSuccess && onSuccess(); return; }
+        runGeofenceCheck(trip, 'start', onSuccess);
+    };
+    const attemptCompleteTrip = (trip, onSuccess) => {
+        if (!geoFencingEnabled) { completeTrip(trip.id); onSuccess && onSuccess(); return; }
+        runGeofenceCheck(trip, 'complete', onSuccess);
+    };
+    const retryGeofenceCheck = () => {
+        if (!geofenceCheck) return;
+        runGeofenceCheck(geofenceCheck.trip, geofenceCheck.action, geofenceCheck.onSuccess);
+    };
+    const cancelGeofenceCheck = () => setGeofenceCheck(null);
+
+    // Demo-only: stands in for "the admin just saved a different vehicle on this plan". In the real
+    // system this would arrive as a push from the admin app; here it's a manual trigger so the flow
+    // can be shown without a live backend connecting the two prototypes.
+    const simulateReassignment = () => {
+        const target = myTrips.find(t => !t.reassigned && (t.status === 'In Transit' || t.status === 'Delayed'))
+            || myTrips.filter(t => !t.reassigned && t.status === 'Scheduled').sort((a, b) => a.time.localeCompare(b.time))[0];
+        if (!target) { alert('No ongoing or upcoming trip to simulate a reassignment on.'); return; }
+        updateTrip(target.id, { reassigned: true, acknowledged: false });
+    };
+
+    const acknowledgeReassignment = (id) => {
+        updateTrip(id, { acknowledged: true });
+        setSelectedTripId(curr => (curr === id ? null : curr));
+    };
+
+    // Demo-only: stands in for the admin swapping this driver onto a different physical vehicle (a
+    // breakdown, a fleet reshuffle, etc.) - a distinct scenario from simulateReassignment above, which
+    // moves one specific trip away from this driver entirely. Here the driver keeps every trip; only
+    // which vehicle they're driving changes. Picks the next vehicle id in sequence off whichever
+    // vehicle is currently effective, purely so the demo has a plausible "new" id to show.
+    const simulateVehicleReassignment = () => {
+        if (vehicleReassignment && !vehicleReassignment.acknowledged) {
+            alert('There is already a pending vehicle reassignment notice to acknowledge.');
+            return;
+        }
+        const currentVehicleId = loggedIn.vehicleId;
+        const num = parseInt(currentVehicleId.replace(/\D/g, ''), 10) || 0;
+        const prefix = currentVehicleId.replace(/\d+$/, '');
+        const newVehicleId = `${prefix}${String(num + 1).padStart(4, '0')}`;
+        // Same category/type either way - the admin is swapping the physical unit, not what kind of
+        // vehicle this driver drives - so the modal can resolve both names off this one type.
+        setVehicleReassignment({ fromVehicleId: currentVehicleId, toVehicleId: newVehicleId, vehicleType: currentVehicleType, acknowledged: false });
+    };
+
+    const acknowledgeVehicleReassignment = () => {
+        if (!vehicleReassignment) return;
+        const { toVehicleId } = vehicleReassignment;
+        // Every trip of this driver's that hasn't already happened moves onto the new vehicle - a
+        // Completed trip stays exactly as it was actually driven, since a reassignment can't rewrite
+        // history.
+        setAssignments(list => list.map(a =>
+            a.driver === loggedIn.name && a.status !== 'Completed' ? { ...a, vehicleId: toVehicleId } : a
+        ));
+        setLoggedIn(d => ({ ...d, vehicleId: toVehicleId }));
+        setVehicleReassignment(curr => curr ? { ...curr, acknowledged: true } : curr);
+    };
+
+    const openSos = (tripId) => { setSosTargetId(tripId); setSosModalOpen(true); };
+
+    const submitSos = (message) => {
+        const target = myTrips.find(t => t.id === sosTargetId);
+        if (!target) return;
+        const alertEntry = {
+            id: uid('SOS'), assignmentId: target.id, vehicleId: target.vehicleId, driver: loggedIn.name,
+            location: `En route - ${target.route}`,
+            reportedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            message: message.trim() || 'Emergency reported by driver', status: 'Active',
+        };
+        setSosAlerts(list => [alertEntry, ...list]);
+        updateTrip(target.id, { sos: true, status: 'Delayed' });
+        setSosModalOpen(false);
+    };
+
+    const resolveSos = (tripId) => {
+        setSosAlerts(list => list.map(s => s.assignmentId === tripId ? { ...s, status: 'Resolved' } : s));
+        updateTrip(tripId, { sos: false });
+    };
+
+    // Resets this vehicle's fuel depletion checkpoint to right now - identical model to the admin
+    // prototype's own Log Refuel (see vehicleFuelProfile above). Tagged 'Driver App' since that's the
+    // whole point of this screen: showing what it looks like when the driver, not an admin, is the one
+    // logging it. Purely local to this app - there's no shared backend for it to reach the admin side.
+    const logRefuel = (vehicleId) => {
+        const today = new Date().toISOString().slice(0, 10);
+        const checkpoint = vehicleTotalKmDriven(vehicleId, assignments);
+        setFuelState(state => ({
+            ...state,
+            [vehicleId]: { fuelCheckpointKm: checkpoint, lastRefuelDate: today, lastRefuelSource: 'Driver App' },
+        }));
+    };
+
+    const logout = () => { setLoggedIn(null); setActiveTab('home'); setSelectedTripId(null); setVehicleReassignment(null); setGeofenceCheck(null); };
+
+    let screen, title;
+    if (selectedTrip) {
+        title = selectedTrip.reassigned ? 'Trip Reassigned' : 'Trip Details';
+        screen = (
+            <TripDetailScreen trip={selectedTrip} hasActiveTrip={hasActiveTrip} onStart={() => attemptStartTrip(selectedTrip)} onComplete={() => attemptCompleteTrip(selectedTrip)}
+                onOpenSos={() => openSos(selectedTrip.id)} onResolveSos={() => resolveSos(selectedTrip.id)} onAcknowledge={() => acknowledgeReassignment(selectedTrip.id)}
+                fuelProfile={vehicleFuelProfile(selectedTrip, assignments, fuelState)} onLogRefuel={() => logRefuel(selectedTrip.vehicleId)} />
+        );
+    } else if (activeTab === 'profile') {
+        title = 'Profile';
+        screen = <ProfileScreen driver={loggedIn} vehicleType={currentVehicleType} onLogout={logout} />;
+    } else if (activeTab === 'trips') {
+        title = 'My Trips';
+        screen = <MyTripsScreen trips={myTrips} onSelect={setSelectedTripId} onStartTrip={attemptStartTrip} hasActiveTrip={hasActiveTrip} onAcknowledge={acknowledgeReassignment} />;
+    } else {
+        title = 'Home';
+        screen = <HomeScreen trips={myTrips} assignments={assignments} fuelState={fuelState} driver={loggedIn} vehicleType={currentVehicleType}
+            onAcknowledge={acknowledgeReassignment} onComplete={attemptCompleteTrip} onOpenSos={openSos} onResolveSos={resolveSos}
+            onLogRefuel={logRefuel} onGoToTrips={() => setActiveTab('trips')} />;
+    }
+
+    return (
+        // h-screen (not min-h-screen) on both wrappers - the phone frame needs to be pinned to exactly
+        // the viewport height so the middle panel's flex-1/overflow-y-auto actually has a bounded
+        // height to scroll within, leaving TopBar and BottomNav fixed in place above/below it. With
+        // min-h-screen the frame was free to grow taller than the viewport instead (which it now
+        // regularly does - the Home hero's map+content easily exceeds one screen), so the whole page
+        // scrolled and BottomNav scrolled away with it instead of staying put.
+        <div className="h-screen bg-bgLight flex justify-center overflow-hidden">
+            <div className="w-full max-w-md bg-bgLight h-screen flex flex-col shadow-xl relative">
+                <TopBar driver={loggedIn} title={title} onBack={selectedTrip ? () => setSelectedTripId(null) : null} onLogout={logout}
+                    onSimulateReassignment={simulateReassignment} onSimulateVehicleReassignment={simulateVehicleReassignment}
+                    simulateAtLocation={simulateAtLocation} onToggleSimulateLocation={() => setSimulateAtLocation(s => !s)} />
+                <div className="flex-1 overflow-y-auto pb-2">{screen}</div>
+                {!selectedTrip && <BottomNav activeTab={activeTab} onChange={t => { setActiveTab(t); setSelectedTripId(null); }} />}
+                <SosModal open={sosModalOpen} onClose={() => setSosModalOpen(false)} onSubmit={submitSos} />
+                <VehicleReassignedModal reassignment={vehicleReassignment} onAcknowledge={acknowledgeVehicleReassignment} />
+                <GeofenceModal check={geofenceCheck} onRetry={retryGeofenceCheck} onCancel={cancelGeofenceCheck} />
+            </div>
+        </div>
+    );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
