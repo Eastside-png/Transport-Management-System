@@ -89,6 +89,11 @@ const DRIVER_APP_DATA = {
 
 // Approximate coordinates for every named location referenced in the seed routes above, so a route
 // string like "A -> B" can be resolved to a pair of map points without storing lat/lng per trip.
+// This app's own copy of the admin prototype's window.LOCATION_REGISTRY (ACT Travel Prototype.html,
+// first script block) - the two static files share no module system, so there's no way to import
+// one canonical list; this stays the one coordinate table inside this file (no second copy here to
+// drift against itself), but it must still be kept in sync BY HAND against the admin file's list
+// whenever a location is added, renamed, or moved.
 const LOCATION_COORDS = {
     'IGI Airport - Terminal 3': [28.5562, 77.1000],
     'Hotel Taj Palace': [28.6001, 77.1770],
@@ -122,18 +127,33 @@ const haversineKm = ([lat1, lng1], [lat2, lng2]) => {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 };
 
-const ROAD_DISTANCE_FACTOR = 1.35;
-const AVG_ROAD_SPEED_KMH = 25;
+// `let`, not `const` (fix-list items 51/52) - the admin prototype's Module Settings can retune these
+// live, bridged in over localStorage (see the sync effect in App and the *_STORAGE_KEY constants
+// below), same mechanism as the geo-fencing toggle already used. Every existing bare reference to
+// either (including inside DISTANCE_MATRIX's own build below) reads whatever the current value is at
+// call time, so reassigning here is enough - no need to also thread these through as props.
+let ROAD_DISTANCE_FACTOR = 1.35;
+let AVG_ROAD_SPEED_KMH = 25;
 
 // Geo-fencing - a driver must be within this radius of the pickup point to Start Trip, or of the
 // drop-off point to Mark Trip Complete, whenever it's enabled (see App's geoFencingEnabled). 500m
 // gives real GPS/network-location accuracy some slack while still meaningfully confirming "actually
 // there," rather than requiring pinpoint precision a phone's location fix often can't hit anyway.
-const GEOFENCE_RADIUS_KM = 0.5;
+// `let`, not `const` (fix-list item 53) - same live-retune bridge as the two constants above.
+let GEOFENCE_RADIUS_KM = 0.5;
 // Must match the exact key the admin panel's window.AdminTab writes to (toggleGeoFencing in
 // ACT Travel Prototype.html) - this is the entire bridge between the two files, since they share no
 // backend. See the geoFencingEnabled state/effect in App for how it's read and kept live.
 const GEOFENCING_STORAGE_KEY = 'kheloTechGeoFencingEnabled';
+// Fix-list items 51/52/53 - same bridge, same admin-side keys (window.ModuleSettingsTab's
+// DRIVER_APP_BRIDGE_KEYS), for the three settings that used to be literals in this file too.
+const ROAD_DISTANCE_FACTOR_STORAGE_KEY = 'kheloTechRoadDistanceFactor';
+const AVG_ROAD_SPEED_STORAGE_KEY = 'kheloTechAvgRoadSpeedKmh';
+const GEOFENCE_RADIUS_STORAGE_KEY = 'kheloTechGeofenceRadiusKm';
+// SOS reports saved here while offline (fix-list item 78), flushed automatically once connectivity
+// returns - see App's isOnline effect below. Scoped to SOS only, the one named highest operational
+// risk on the settle-first list, not a general offline mode for the rest of the app.
+const SOS_QUEUE_STORAGE_KEY = 'kheloTechQueuedSos';
 
 // Wraps the browser's Geolocation API in a promise - rejects with a real Error either when the API
 // isn't available at all (older browser, non-HTTPS/non-localhost origin) or when the browser's own
@@ -150,7 +170,10 @@ const getCurrentPositionAsync = () => new Promise((resolve, reject) => {
     );
 });
 
-const DISTANCE_MATRIX = (() => {
+// Callable again (fix-list items 51/52), not a one-shot IIFE - see the sync effect in App that calls
+// this whenever ROAD_DISTANCE_FACTOR/AVG_ROAD_SPEED_KMH change.
+let DISTANCE_MATRIX = {};
+const rebuildDistanceMatrix = () => {
     const names = Object.keys(LOCATION_COORDS);
     const matrix = {};
     names.forEach(from => {
@@ -164,8 +187,9 @@ const DISTANCE_MATRIX = (() => {
             };
         });
     });
-    return matrix;
-})();
+    DISTANCE_MATRIX = matrix;
+};
+rebuildDistanceMatrix();
 
 const lookupDistance = (origin, destination) => {
     if (!origin || !destination) return null;
@@ -177,6 +201,24 @@ const lookupDistance = (origin, destination) => {
 const tripEstimate = (route) => {
     const [origin, destination] = route.split(' -> ');
     return lookupDistance(origin, destination);
+};
+
+const DEFAULT_TRIP_DURATION_MIN = 30;
+const estimatedTripDurationMin = (route) => tripEstimate(route)?.durationMin || DEFAULT_TRIP_DURATION_MIN;
+
+// A trip's live progress (fix-list items 65/66), derived fresh from a stored start timestamp and
+// estimated duration rather than a ticked, stored counter - same approach and reasoning as the admin
+// prototype's own window.derivedProgress (ACT Travel Prototype.html). Deterministic and immune to
+// freezing when nothing's open to tick it. Caps at 99, not 100 - Mark Trip Complete (completeTrip in
+// App) is what actually sets 100 and Completed, the same "waits for the driver" decision as the
+// admin side (fix-list item 67), so a trip never silently finishes itself.
+const derivedProgress = (trip) => {
+    // A trip completeTrip already finalized always reads back its own stored 100 - once it's
+    // Completed, its clock is done, not still running past what startedAt/estimatedDurationMin
+    // would otherwise keep computing.
+    if (trip.status === 'Completed' || !trip.startedAt || !trip.estimatedDurationMin) return trip.progress ?? 0;
+    const elapsedMin = (Date.now() - trip.startedAt) / 60000;
+    return Math.max(0, Math.min(99, Math.round((elapsedMin / trip.estimatedDurationMin) * 100)));
 };
 
 // Straight-line interpolation between two [lat, lng] points at `progress` (0-100) along the way -
@@ -262,7 +304,7 @@ const vehicleTotalKmDriven = (vehicleId, assignments) =>
             const est = tripEstimate(a.route);
             if (!est) return sum;
             if (a.status === 'Completed') return sum + est.distanceKm;
-            if (a.status === 'In Transit' || a.status === 'Delayed') return sum + est.distanceKm * ((a.progress || 0) / 100);
+            if (a.status === 'In Transit' || a.status === 'Delayed') return sum + est.distanceKm * (derivedProgress(a) / 100);
             return sum;
         }, 0);
 
@@ -272,6 +314,11 @@ const vehicleTotalKmDriven = (vehicleId, assignments) =>
 // is App's own local map of vehicleId -> { fuelCheckpointKm, lastRefuelDate, lastRefuelSource } - this
 // prototype has no shared backend with the admin app, so a refuel logged here never reaches it and
 // vice versa; each side just tells its own honest, internally-consistent version of the story.
+// Same placeholder figure as the admin prototype's window.CRITICAL_FUEL_PERCENT (fix-list item 46) -
+// not an Operations-approved number, just something real to build the "fuel critical" notification
+// tier and this gauge's red band against instead of a bare hardcoded 20 in three different places.
+const CRITICAL_FUEL_PERCENT = 15;
+
 const vehicleFuelProfile = (trip, assignments, fuelState) => {
     const cat = VEHICLE_FUEL_DEFAULTS[vehicleCategoryFromType(trip.type)];
     if (!cat) return null;
@@ -284,11 +331,18 @@ const vehicleFuelProfile = (trip, assignments, fuelState) => {
         refuelCycleKm: cat.refuelCycleKm,
         kmSinceRefuel: Math.round(kmSinceRefuel * 10) / 10,
         dueForRefuel: kmSinceRefuel >= cat.refuelCycleKm,
+        fuelCritical: fuelLevel <= CRITICAL_FUEL_PERCENT,
         lastRefuelDate: state.lastRefuelDate || null,
         lastRefuelSource: state.lastRefuelSource || null,
     };
 };
 
+// Every clock/date in both this app and the admin prototype runs in the browser's local system
+// time with no timezone field or conversion anywhere (fix-list items 104/126) - a deliberate policy
+// decision, not an oversight: NG 2027 is a single-timezone, India-hosted programme, so every
+// date/time in the system is Indian Standard Time, full stop. The admin prototype's own header
+// clock labels this explicitly ("... IST"); this app has no standing header clock to label the same
+// way, hence the policy note living here instead.
 const formatClockTime = (date) => date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
 // Live ETA for a trip already under way: total estimated duration minus however much of it
@@ -297,7 +351,7 @@ const formatClockTime = (date) => date.toLocaleTimeString([], { hour: '2-digit',
 const liveEta = (trip) => {
     const est = tripEstimate(trip.route);
     if (!est) return null;
-    const remainingMin = est.durationMin * (1 - (trip.progress || 0) / 100);
+    const remainingMin = est.durationMin * (1 - derivedProgress(trip) / 100);
     return formatClockTime(new Date(Date.now() + remainingMin * 60000));
 };
 
@@ -333,6 +387,10 @@ const ICONS = {
     droplet: ['M12 2c-3.2 4.6-7 9.6-7 13a7 7 0 0 0 14 0c0-3.4-3.8-8.4-7-13z'],
     distance: ['M3 21L21 3', 'M7 17l2 2', 'M11 13l2 2', 'M15 9l2 2'],
     tag: ['M20.59 13.41 13 21a2 2 0 0 1-2.83 0l-8-8A2 2 0 0 1 2 11.59V4a2 2 0 0 1 2-2h7.59a2 2 0 0 1 1.41.59l8 8a2 2 0 0 1 0 2.82z', 'M7 7h.01'],
+    // Added for the offline/online demo toggle in TopBar (fix-list item 78) - lets a demo show both
+    // the connected and queued-SOS paths without actually needing to kill the device's real network.
+    wifi: ['M5 12.55a11 11 0 0 1 14.08 0', 'M1.42 9a16 16 0 0 1 21.16 0', 'M8.53 16.11a6 6 0 0 1 6.95 0', 'M12 20h.01'],
+    wifiOff: ['M1 1L23 23', 'M16.72 11.06a10.94 10.94 0 0 1 2.28 1.49', 'M5 12.55a10.94 10.94 0 0 1 5.17-2.39', 'M10.71 5.05A16 16 0 0 1 22.58 9', 'M1.42 9a15.91 15.91 0 0 1 4.7-2.88', 'M8.53 16.11a6 6 0 0 1 6.95 0', 'M12 20h.01'],
 };
 
 function Icon({ name, size = 18, className = '' }) {
@@ -347,8 +405,43 @@ function Badge({ status }) {
     return <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-semibold shrink-0 ${STATUS_COLOR[status] || 'bg-slate-100 text-slate-600'}`}>{status}</span>;
 }
 
+// Last 10 digits only, so '+91 98220 11223', '9822011223', and '098220-11223' all resolve to the
+// same driver regardless of how the phone number happens to be formatted or typed.
+const normalizePhone = (phone) => (phone || '').replace(/\D/g, '').slice(-10);
+
+// Phone + OTP look (fix-list item 76) - the real target flow, decided but not buildable here since
+// there's no SMS provider or backend in this prototype: a driver enrolls with the phone number
+// captured at vendor onboarding (Driver.phone), signs in with that number plus a one-time code sent
+// to it, and stays signed in on that handset until an explicit sign-out or a long, rolling session
+// expiry (a new device would need a fresh OTP). What's actually built here mocks step 2 only - any
+// 6-digit code is accepted once a phone number matches a driver on file - clearly labeled as such
+// rather than pretending to be a real verification. The old bare "pick any driver" dropdown stays
+// one click away as an explicit demo shortcut, not the primary path anymore.
 function LoginScreen({ drivers, onLogin }) {
+    const [step, setStep] = useState('phone'); // 'phone' | 'otp' | 'demo'
+    const [phone, setPhone] = useState('');
+    const [otp, setOtp] = useState('');
+    const [error, setError] = useState('');
+    const [matchedDriver, setMatchedDriver] = useState(null);
     const [selectedId, setSelectedId] = useState(drivers[0]?.id || '');
+
+    const sendCode = () => {
+        const key = normalizePhone(phone);
+        if (key.length !== 10) { setError('Enter a valid 10-digit phone number.'); return; }
+        const driver = drivers.find(d => normalizePhone(d.phone) === key);
+        if (!driver) { setError('No driver account found with this phone number.'); return; }
+        setError('');
+        setMatchedDriver(driver);
+        setOtp('');
+        setStep('otp');
+    };
+
+    const verifyCode = () => {
+        // Mocked verification - any 6 digits pass once the phone number itself already matched a
+        // real driver record above. There's no SMS provider here to actually send or check a code.
+        if (!/^\d{6}$/.test(otp)) { setError('Enter the 6-digit code.'); return; }
+        onLogin(matchedDriver);
+    };
 
     const login = () => {
         const driver = drivers.find(d => d.id === selectedId);
@@ -365,22 +458,64 @@ function LoginScreen({ drivers, onLogin }) {
                 <h1 className="text-xl font-bold text-slate-800">Transport <span className="text-brandAccent">Management</span></h1>
                 <p className="text-sm text-slate-500 mt-1 mb-6">Driver App - Sign in to view your assigned trips</p>
 
-                <label className="block text-xs font-medium text-slate-500 mb-1">Select Driver Account</label>
-                <select value={selectedId} onChange={e => setSelectedId(e.target.value)}
-                    className="w-full px-3 py-2.5 text-sm border border-slate-200 rounded-lg mb-4 focus:ring-2 focus:ring-brandAccent/30 focus:outline-none">
-                    {drivers.map(d => <option key={d.id} value={d.id}>{d.name} - {d.vehicleId}</option>)}
-                </select>
+                {step === 'phone' && (
+                    <>
+                        <label className="block text-xs font-medium text-slate-500 mb-1">Phone Number</label>
+                        <input type="tel" value={phone} onChange={e => { setPhone(e.target.value); setError(''); }}
+                            placeholder="+91 98220 11223"
+                            className="w-full px-3 py-2.5 text-sm border border-slate-200 rounded-lg mb-1 focus:ring-2 focus:ring-brandAccent/30 focus:outline-none" />
+                        {error && <p className="text-xs text-red-600 mb-3">{error}</p>}
+                        <button onClick={sendCode} className={`w-full py-2.5 rounded-lg bg-brandBlue text-white text-sm font-semibold hover:bg-slate-800 transition ${error ? '' : 'mt-3'}`}>
+                            Send Code
+                        </button>
+                        <button onClick={() => { setStep('demo'); setError(''); }} className="w-full text-xs text-slate-400 hover:text-brandAccent mt-4">
+                            Demo prototype - use a demo account instead
+                        </button>
+                    </>
+                )}
 
-                <button onClick={login} className="w-full py-2.5 rounded-lg bg-brandBlue text-white text-sm font-semibold hover:bg-slate-800 transition">
-                    Sign In
-                </button>
-                <p className="text-xs text-slate-400 text-center mt-4">Demo prototype - pick any driver to preview their trips</p>
+                {step === 'otp' && matchedDriver && (
+                    <>
+                        <p className="text-sm text-slate-600 mb-4">
+                            Enter the 6-digit code sent to <strong>{matchedDriver.phone}</strong>.
+                        </p>
+                        <label className="block text-xs font-medium text-slate-500 mb-1">Verification Code</label>
+                        <input type="text" inputMode="numeric" maxLength={6} value={otp}
+                            onChange={e => { setOtp(e.target.value.replace(/\D/g, '')); setError(''); }}
+                            placeholder="000000"
+                            className="w-full px-3 py-2.5 text-lg tracking-[0.4em] text-center border border-slate-200 rounded-lg mb-1 focus:ring-2 focus:ring-brandAccent/30 focus:outline-none" />
+                        {error && <p className="text-xs text-red-600 mb-3">{error}</p>}
+                        <button onClick={verifyCode} className={`w-full py-2.5 rounded-lg bg-brandBlue text-white text-sm font-semibold hover:bg-slate-800 transition ${error ? '' : 'mt-3'}`}>
+                            Verify &amp; Sign In
+                        </button>
+                        <button onClick={() => { setStep('phone'); setError(''); }} className="w-full text-xs text-slate-400 hover:text-brandAccent mt-4">
+                            Use a different phone number
+                        </button>
+                    </>
+                )}
+
+                {step === 'demo' && (
+                    <>
+                        <label className="block text-xs font-medium text-slate-500 mb-1">Select Driver Account</label>
+                        <select value={selectedId} onChange={e => setSelectedId(e.target.value)}
+                            className="w-full px-3 py-2.5 text-sm border border-slate-200 rounded-lg mb-4 focus:ring-2 focus:ring-brandAccent/30 focus:outline-none">
+                            {drivers.map(d => <option key={d.id} value={d.id}>{d.name} - {d.vehicleId}</option>)}
+                        </select>
+                        <button onClick={login} className="w-full py-2.5 rounded-lg bg-brandBlue text-white text-sm font-semibold hover:bg-slate-800 transition">
+                            Sign In
+                        </button>
+                        <button onClick={() => setStep('phone')} className="w-full text-xs text-slate-400 hover:text-brandAccent mt-4">
+                            Back to phone sign-in
+                        </button>
+                    </>
+                )}
+                <p className="text-xs text-slate-400 text-center mt-4">Demo prototype - the verification code isn't real, any 6 digits work</p>
             </div>
         </div>
     );
 }
 
-function TopBar({ driver, title, onBack, onLogout, onSimulateReassignment, onSimulateVehicleReassignment, simulateAtLocation, onToggleSimulateLocation }) {
+function TopBar({ driver, title, onBack, onLogout, onSimulateReassignment, onSimulateVehicleReassignment, simulateAtLocation, onToggleSimulateLocation, isOnline, onToggleSimulateOffline }) {
     return (
         <div className="sticky top-0 z-10 bg-brandBlue text-white px-4 py-3 flex items-center gap-3 shadow-md">
             {onBack ? (
@@ -409,6 +544,20 @@ function TopBar({ driver, title, onBack, onLogout, onSimulateReassignment, onSim
                     title={simulateAtLocation ? 'Demo: driver is simulated as being at the pickup/drop-off point - click to turn off' : 'Demo only: simulate the driver being exactly at the pickup/drop-off point'}
                     aria-label="Toggle simulated location for geo-fencing (demo)" aria-pressed={simulateAtLocation}>
                     <Icon name="pin" size={17} />
+                </button>
+            )}
+            {/* Demo-only: forces the app into the offline branch (fix-list item 78) without needing to
+                actually kill the device's network - toggling this flips submitSos over to the queued
+                path and the flush effect back the moment it's switched off again, so both the "SOS
+                saved, will send once you're back online" and "help is on the way" banners can be shown
+                on demand. This overrides the real navigator.onLine reading; it doesn't replace it - if
+                the device genuinely goes offline this still shows offline regardless of the toggle. */}
+            {!onBack && onToggleSimulateOffline && (
+                <button onClick={onToggleSimulateOffline}
+                    className={`p-2 rounded-lg transition ${!isOnline ? 'bg-rose-500/20 text-rose-300' : 'hover:bg-white/10 text-slate-300'}`}
+                    title={isOnline ? 'Demo only: simulate this device going offline' : 'Demo: offline is simulated - click to go back online'}
+                    aria-label="Toggle simulated network connectivity (demo)" aria-pressed={!isOnline}>
+                    <Icon name={isOnline ? 'wifi' : 'wifiOff'} size={17} />
                 </button>
             )}
             {!onBack && onSimulateVehicleReassignment && (
@@ -661,10 +810,10 @@ function OngoingTripCard({ trip, isExpanded, onSelect, onToggleExpand }) {
 
                 <div className="mt-4">
                     <div className="flex justify-between text-[11px] font-medium text-slate-500 mb-1.5">
-                        <span>Trip progress</span><span>{trip.progress}%</span>
+                        <span>Trip progress</span><span>{derivedProgress(trip)}%</span>
                     </div>
                     <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
-                        <div className="h-full bg-brandAccent transition-all" style={{ width: `${trip.progress}%` }} />
+                        <div className="h-full bg-brandAccent transition-all" style={{ width: `${derivedProgress(trip)}%` }} />
                     </div>
                 </div>
 
@@ -699,11 +848,21 @@ function HomeOngoingHero({ trip, fuelProfile, onLogRefuel, onComplete, onOpenSos
     return (
         <div className="animate-in">
             <div className="relative">
-                <RouteMap route={trip.route} progress={trip.progress} heightClass="h-60" showZoomControl />
+                <RouteMap route={trip.route} progress={derivedProgress(trip)} heightClass="h-60" showZoomControl />
                 <div className="absolute top-3 left-3 z-[500]"><Badge status={trip.status} /></div>
             </div>
 
             <div className="-mt-5 relative z-[400] bg-bgLight rounded-t-3xl px-4 pt-5 pb-5 space-y-4">
+                {/* sosQueued (fix-list item 78) is a distinct state from sos - a report still sitting
+                    in the local offline queue hasn't reached anyone yet, so this banner never claims
+                    "help is on the way" for one, and there's nothing to Mark Safe until it actually
+                    sends. */}
+                {trip.sosQueued && !trip.sos && (
+                    <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl px-4 py-3 text-sm flex items-center gap-2">
+                        <Icon name="alert" size={18} />
+                        <span className="font-semibold">SOS saved - will send automatically once you're back online</span>
+                    </div>
+                )}
                 {trip.sos && (
                     <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm flex items-center justify-between gap-3 sos-pulse">
                         <div className="flex items-center gap-2">
@@ -728,11 +887,11 @@ function HomeOngoingHero({ trip, fuelProfile, onLogRefuel, onComplete, onOpenSos
                         </div>
                         <div className="text-right shrink-0">
                             <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide">Progress</p>
-                            <p className="text-2xl font-bold text-brandAccent leading-tight mt-0.5">{trip.progress}%</p>
+                            <p className="text-2xl font-bold text-brandAccent leading-tight mt-0.5">{derivedProgress(trip)}%</p>
                         </div>
                     </div>
                     <div className="h-2 rounded-full bg-slate-100 overflow-hidden mt-3">
-                        <div className="h-full bg-brandAccent transition-all" style={{ width: `${trip.progress}%` }} />
+                        <div className="h-full bg-brandAccent transition-all" style={{ width: `${derivedProgress(trip)}%` }} />
                     </div>
                 </div>
 
@@ -773,7 +932,7 @@ function HomeOngoingHero({ trip, fuelProfile, onLogRefuel, onComplete, onOpenSos
                         </div>
                         <div className="flex items-center gap-2">
                             <div className="flex-1 h-1.5 rounded-full bg-slate-100 overflow-hidden">
-                                <div className={`h-full rounded-full transition-all ${fuelProfile.fuelLevel < 20 ? 'bg-red-500' : fuelProfile.fuelLevel < 50 ? 'bg-amber-500' : 'bg-emerald-500'}`}
+                                <div className={`h-full rounded-full transition-all ${fuelProfile.fuelCritical ? 'bg-red-500' : fuelProfile.fuelLevel < 50 ? 'bg-amber-500' : 'bg-emerald-500'}`}
                                     style={{ width: `${fuelProfile.fuelLevel}%` }} />
                             </div>
                             <span className="text-xs font-semibold text-slate-600 w-9 text-right">{fuelProfile.fuelLevel}%</span>
@@ -1044,6 +1203,12 @@ function TripDetailScreen({ trip, hasActiveTrip, onStart, onComplete, onOpenSos,
 
     return (
         <div className="p-4 space-y-4 animate-in">
+            {trip.sosQueued && !trip.sos && (
+                <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl px-4 py-3 text-sm flex items-center gap-2">
+                    <Icon name="alert" size={18} />
+                    <span className="font-semibold">SOS saved - will send automatically once you're back online</span>
+                </div>
+            )}
             {trip.sos && (
                 <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm flex items-center justify-between gap-3 sos-pulse">
                     <div className="flex items-center gap-2">
@@ -1072,10 +1237,10 @@ function TripDetailScreen({ trip, hasActiveTrip, onStart, onComplete, onOpenSos,
                 {isRunning && (
                     <div className="mt-4">
                         <div className="flex justify-between text-xs text-slate-500 mb-1">
-                            <span>Trip progress</span><span>{trip.progress}%</span>
+                            <span>Trip progress</span><span>{derivedProgress(trip)}%</span>
                         </div>
                         <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
-                            <div className="h-full bg-brandAccent transition-all" style={{ width: `${trip.progress}%` }} />
+                            <div className="h-full bg-brandAccent transition-all" style={{ width: `${derivedProgress(trip)}%` }} />
                         </div>
                         {liveEta(trip) && (
                             <div className="flex justify-between items-center mt-3 pt-3 border-t border-slate-100">
@@ -1110,7 +1275,7 @@ function TripDetailScreen({ trip, hasActiveTrip, onStart, onComplete, onOpenSos,
                         </div>
                         <div className="flex items-center gap-2">
                             <div className="flex-1 h-1.5 rounded-full bg-slate-100 overflow-hidden">
-                                <div className={`h-full rounded-full transition-all ${fuelProfile.fuelLevel < 20 ? 'bg-red-500' : fuelProfile.fuelLevel < 50 ? 'bg-amber-500' : 'bg-emerald-500'}`}
+                                <div className={`h-full rounded-full transition-all ${fuelProfile.fuelCritical ? 'bg-red-500' : fuelProfile.fuelLevel < 50 ? 'bg-amber-500' : 'bg-emerald-500'}`}
                                     style={{ width: `${fuelProfile.fuelLevel}%` }} />
                             </div>
                             <span className="text-xs font-semibold text-slate-600 w-9 text-right">{fuelProfile.fuelLevel}%</span>
@@ -1362,6 +1527,10 @@ function App() {
     const [vehicleReassignment, setVehicleReassignment] = useState(null);
     // vehicleId -> { fuelCheckpointKm, lastRefuelDate, lastRefuelSource } - see vehicleFuelProfile above.
     const [fuelState, setFuelState] = useState({});
+    // Refuel event entity (fix-list item 39) - a real log now, one row per Log Refuel tap, alongside
+    // fuelState's own "current checkpoint" snapshot above (that one gets overwritten each time; this
+    // one accumulates).
+    const [refuelEvents, setRefuelEvents] = useState([]);
     // Whether Start Trip/Mark Trip Complete require the driver to actually be near the pickup/
     // drop-off point - a policy the admin panel controls, not this app. There's no shared backend
     // between the two files, so this reads a localStorage key the admin panel writes to (see
@@ -1382,6 +1551,14 @@ function App() {
     // button in TopBar. Only changes where runGeofenceCheck gets its position reading from, not
     // whether the check runs at all (that's still geoFencingEnabled, above).
     const [simulateAtLocation, setSimulateAtLocation] = useState(false);
+    // Native browser connectivity state (fix-list item 78) - tracks the device's real network status.
+    const [browserOnline, setBrowserOnline] = useState(() => (typeof navigator !== 'undefined' ? navigator.onLine : true));
+    // Demo-only override (see the toggle button in TopBar) for forcing the offline branch on demand,
+    // since a demo device is almost always actually connected. Independent of the real signal above -
+    // effective connectivity is "genuinely online AND not simulated offline", so a real disconnection
+    // still wins even if someone forgot to flip this back on.
+    const [simulateOffline, setSimulateOffline] = useState(false);
+    const isOnline = browserOnline && !simulateOffline;
 
     // Picks up a geo-fencing toggle from the admin panel live, if the two happen to be open in tabs
     // sharing the same browser storage (same origin) right now - 'storage' only fires for changes made
@@ -1395,13 +1572,78 @@ function App() {
         return () => window.removeEventListener('storage', onStorage);
     }, []);
 
-    // Simulate live movement for whichever trip is currently "In Transit" - a stand-in for real GPS.
+    // Fix-list items 51/52/53 - same bridge idea as geo-fencing above, for the three numeric settings
+    // Module Settings can retune. These three (ROAD_DISTANCE_FACTOR/AVG_ROAD_SPEED_KMH/
+    // GEOFENCE_RADIUS_KM) are plain module-level `let`s, not React state, so a bump to this otherwise
+    // unused counter is what actually forces a re-render once they change - without it, a distance
+    // caption already on screen wouldn't visibly update until some unrelated state change happened to
+    // re-render it.
+    const [, forceSettingsSyncTick] = useState(0);
     useEffect(() => {
-        const id = setInterval(() => {
-            setAssignments(list => list.map(a =>
-                a.status === 'In Transit' && a.progress < 96 ? { ...a, progress: Math.min(96, a.progress + 2) } : a
-            ));
-        }, 1800);
+        const syncFromStorage = () => {
+            let changed = false;
+            try {
+                const factor = Number(localStorage.getItem(ROAD_DISTANCE_FACTOR_STORAGE_KEY));
+                if (Number.isFinite(factor) && factor > 0 && factor !== ROAD_DISTANCE_FACTOR) { ROAD_DISTANCE_FACTOR = factor; changed = true; }
+                const speed = Number(localStorage.getItem(AVG_ROAD_SPEED_STORAGE_KEY));
+                if (Number.isFinite(speed) && speed > 0 && speed !== AVG_ROAD_SPEED_KMH) { AVG_ROAD_SPEED_KMH = speed; changed = true; }
+                const radius = Number(localStorage.getItem(GEOFENCE_RADIUS_STORAGE_KEY));
+                if (Number.isFinite(radius) && radius > 0) GEOFENCE_RADIUS_KM = radius;
+            } catch (e) { /* storage unavailable - stays on the built-in defaults */ }
+            if (changed) { rebuildDistanceMatrix(); forceSettingsSyncTick(t => t + 1); }
+        };
+        syncFromStorage();
+        window.addEventListener('storage', syncFromStorage);
+        return () => window.removeEventListener('storage', syncFromStorage);
+    }, []);
+
+    useEffect(() => {
+        const goOnline = () => setBrowserOnline(true);
+        const goOffline = () => setBrowserOnline(false);
+        window.addEventListener('online', goOnline);
+        window.addEventListener('offline', goOffline);
+        return () => { window.removeEventListener('online', goOnline); window.removeEventListener('offline', goOffline); };
+    }, []);
+
+    // Flushes any SOS reports queued while offline (see submitSos below) the moment connectivity
+    // comes back - fix-list item 78. localStorage stands in for a real durable queue/background sync
+    // since there's no service worker or backend here.
+    useEffect(() => {
+        if (!isOnline) return;
+        let queued = [];
+        try { queued = JSON.parse(localStorage.getItem(SOS_QUEUE_STORAGE_KEY) || '[]'); } catch (e) { queued = []; }
+        if (queued.length === 0) return;
+        setSosAlerts(list => [...queued, ...list]);
+        // sosQueued -> sos is the actual delivery moment (fix-list item 78) - only now does "help is
+        // on the way" become a true claim, so only now does the trip pick up the flag that banner
+        // reads.
+        setAssignments(list => list.map(a =>
+            queued.some(q => q.assignmentId === a.id) ? { ...a, sos: true, sosQueued: false, status: 'Delayed' } : a
+        ));
+        try { localStorage.removeItem(SOS_QUEUE_STORAGE_KEY); } catch (e) {}
+    }, [isOnline]);
+
+    // Backfills startedAt/estimatedDurationMin onto any seeded 'In Transit' trip that doesn't have
+    // them yet (fix-list items 65/66), so derivedProgress has something to compute from - chosen so
+    // the first derived value lands close to whatever `progress` was seeded with, rather than
+    // jumping to 0%. Runs once; startTrip below sets these directly for a trip actually started
+    // during this session, same as the admin prototype's own backfill effect.
+    useEffect(() => {
+        setAssignments(list => list.map(a => {
+            if (a.status !== 'In Transit' || a.startedAt) return a;
+            const estimatedDurationMin = estimatedTripDurationMin(a.route);
+            const seededProgress = a.progress ?? 0;
+            const startedAt = Date.now() - (seededProgress / 100) * estimatedDurationMin * 60000;
+            return { ...a, startedAt, estimatedDurationMin };
+        }));
+    }, []);
+
+    // Nothing here mutates progress any more (see derivedProgress above, fix-list items 65/66) - just
+    // forces a re-render every so often so a trip's progress bar/map marker keeps visibly advancing
+    // while the app is open, standing in for real GPS the same way the old ticked counter did.
+    const [, forceProgressTick] = useState(0);
+    useEffect(() => {
+        const id = setInterval(() => forceProgressTick(t => t + 1), 1800);
         return () => clearInterval(id);
     }, []);
 
@@ -1428,8 +1670,15 @@ function App() {
 
     const startTrip = (id) => {
         if (hasActiveTrip) return;
-        updateTrip(id, { status: 'In Transit', progress: 5 });
+        // startedAt/estimatedDurationMin (fix-list items 65/66/68), not a hardcoded progress: 5 - this
+        // is the one explicit moment a trip's clock actually starts, everything else (map marker,
+        // progress bars, ETA) derives from it going forward. Falls back to the flat default duration
+        // if this trip's route doesn't resolve to two known locations.
+        const trip = assignments.find(a => a.id === id);
+        updateTrip(id, { status: 'In Transit', startedAt: Date.now(), estimatedDurationMin: trip ? estimatedTripDurationMin(trip.route) : DEFAULT_TRIP_DURATION_MIN });
     };
+    // The only thing that ever sets progress to 100 and status to Completed (fix-list item 67) -
+    // derivedProgress caps at 99 on its own, a trip never silently finishes itself.
     const completeTrip = (id) => updateTrip(id, { status: 'Completed', progress: 100 });
 
     // Runs one geo-fencing check for `trip` and either performs the action immediately (distance is
@@ -1538,6 +1787,22 @@ function App() {
             reportedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             message: message.trim() || 'Emergency reported by driver', status: 'Active',
         };
+        if (!isOnline) {
+            // Queued, not lost (fix-list item 78) - saved to localStorage and flushed automatically
+            // by the effect above the moment connectivity returns. The trip itself isn't flagged
+            // sos/Delayed until the report actually lands, same as it would with a real backend
+            // queue - but it does get sosQueued, a distinct state from sos (fix-list item 78's own
+            // follow-up: "help is on the way" is a claim about a report that's actually reached
+            // someone, and saying that about one still sitting in a local queue would be dishonest).
+            try {
+                const queued = JSON.parse(localStorage.getItem(SOS_QUEUE_STORAGE_KEY) || '[]');
+                localStorage.setItem(SOS_QUEUE_STORAGE_KEY, JSON.stringify([...queued, alertEntry]));
+            } catch (e) { /* localStorage unavailable (private mode, quota) - nothing more to do here */ }
+            updateTrip(target.id, { sosQueued: true });
+            setSosModalOpen(false);
+            alert("No connection right now - your SOS report is saved and will send automatically the moment you're back online.");
+            return;
+        }
         setSosAlerts(list => [alertEntry, ...list]);
         updateTrip(target.id, { sos: true, status: 'Delayed' });
         setSosModalOpen(false);
@@ -1559,6 +1824,7 @@ function App() {
             ...state,
             [vehicleId]: { fuelCheckpointKm: checkpoint, lastRefuelDate: today, lastRefuelSource: 'Driver App' },
         }));
+        setRefuelEvents(list => [{ id: uid('RFL'), vehicleId, date: today, source: 'Driver App', odometerBasisKm: Math.round(checkpoint) }, ...list]);
     };
 
     const logout = () => { setLoggedIn(null); setActiveTab('home'); setSelectedTripId(null); setVehicleReassignment(null); setGeofenceCheck(null); };
@@ -1595,7 +1861,8 @@ function App() {
             <div className="w-full max-w-md bg-bgLight h-screen flex flex-col shadow-xl relative">
                 <TopBar driver={loggedIn} title={title} onBack={selectedTrip ? () => setSelectedTripId(null) : null} onLogout={logout}
                     onSimulateReassignment={simulateReassignment} onSimulateVehicleReassignment={simulateVehicleReassignment}
-                    simulateAtLocation={simulateAtLocation} onToggleSimulateLocation={() => setSimulateAtLocation(s => !s)} />
+                    simulateAtLocation={simulateAtLocation} onToggleSimulateLocation={() => setSimulateAtLocation(s => !s)}
+                    isOnline={isOnline} onToggleSimulateOffline={() => setSimulateOffline(s => !s)} />
                 <div className="flex-1 overflow-y-auto pb-2">{screen}</div>
                 {!selectedTrip && <BottomNav activeTab={activeTab} onChange={t => { setActiveTab(t); setSelectedTripId(null); }} />}
                 <SosModal open={sosModalOpen} onClose={() => setSosModalOpen(false)} onSubmit={submitSos} />
