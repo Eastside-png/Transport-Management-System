@@ -60,6 +60,12 @@ const DRIVER_APP_DATA = {
         { id: 'DRV-012', name: 'Deepika Rao', vehicleId: 'VH-1301', vendor: 'SwiftRide Logistics', licenseId: 'DL0120200234109', phone: '+91 91098 99001', licenseExpiry: '2029-03-17', status: 'Active' },
         { id: 'DRV-013', name: 'Sunil Chauhan', vehicleId: 'VH-4501', vendor: 'Metro Fleet Services', licenseId: 'HR0220170345210', phone: '+91 90987 00112', licenseExpiry: '2025-09-30', status: 'Expired' },
         { id: 'DRV-014', name: 'Imran Qureshi', vehicleId: 'VH-9801', vendor: 'Highway Star Travels', licenseId: 'HR5120220456321', phone: '+91 89876 11223', licenseExpiry: '2028-08-05', status: 'Active' },
+        // Mirrors the Stakeholder App's own STAKEHOLDER_APP_DATA.fleet/drivers (ACT Stakeholder
+        // Prototype.html) - a Minibus deliberately stationed at Athletes Village so an Athletes
+        // on-call request always has a real, in-range candidate to nudge, from any seeded pickup. No
+        // seed assignment for VH-2212 here (deliberately idle/free from the start), so this driver is
+        // always nudgeable the moment the app loads.
+        { id: 'DRV-015', name: 'Rohit Bansal', vehicleId: 'VH-2212', vendor: 'SwiftRide Logistics', licenseId: 'DL0120240890123', phone: '+91 90011 22334', licenseExpiry: '2029-05-20', status: 'Active' },
     ],
     assignments: [
         { id: 'ASN-001', vehicleId: 'VH-4401', type: 'Bus (40)', driver: 'Ramesh Kumar', vendorName: 'SwiftRide Logistics', route: 'IGI Airport - Terminal 3 -> Hotel Taj Palace', time: '09:15', status: 'In Transit', progress: 62, stakeholder: 'Delegation Alpha - Team Australia', phase: 'ongoing', sos: false },
@@ -84,6 +90,14 @@ const DRIVER_APP_DATA = {
     sosAlerts: [
         { id: 'SOS-001', assignmentId: 'ASN-002', vehicleId: 'VH-1092', driver: 'Amit Patel', location: 'Ring Road, near Hotel Lakeside Residency', reportedAt: '09:34', message: 'Vehicle breakdown - passenger safety OK', status: 'Active' },
         { id: 'SOS-002', assignmentId: 'ASN-007', vehicleId: 'VH-9002', driver: 'Suresh Yadav', location: 'NH-9 near Akshardham, approaching Athletes Village', reportedAt: '09:52', message: 'Minor collision - awaiting police report, all passengers safe', status: 'Active' },
+    ],
+    // Trimmed copy of the admin panel's own shuttlePlans (ACT Travel Prototype.html) - a fixed-
+    // interval loop a vehicle (and whoever's driving it) services repeatedly, rather than the one-off
+    // dispatched trips in `assignments` above. VH-2210 (Priya Sharma, DRV-005) is deliberately the
+    // demo vehicle on this loop - see the new Shuttle tab/ShuttleScreen, which resolves a plan by
+    // matching the logged-in driver's own vehicleId against `vehicles` here.
+    shuttlePlans: [
+        { id: 'SHT-001', origins: ['Athletes Village - Block A', 'Athletes Village - Block C'], destination: 'Jawaharlal Nehru Stadium', frequencyMinutes: 30, startTime: '06:00', endTime: '22:00', vehicles: ['VH-2210', 'VH-2211'], status: 'Active' },
     ],
 };
 
@@ -154,6 +168,54 @@ const GEOFENCE_RADIUS_STORAGE_KEY = 'kheloTechGeofenceRadiusKm';
 // returns - see App's isOnline effect below. Scoped to SOS only, the one named highest operational
 // risk on the settle-first list, not a general offline mode for the rest of the app.
 const SOS_QUEUE_STORAGE_KEY = 'kheloTechQueuedSos';
+// Must match the exact key the admin panel writes to (window.ROUTE_PLAN_PUBLISH_STORAGE_KEY /
+// RoutePlansTab's publishPlan, in ACT Travel Prototype.html) - the one bridge in this whole system
+// that runs admin -> this app instead of the other way. A Route Plan only ever shows up here once an
+// admin has explicitly Published it (not merely assigned a vehicle - see that function's own
+// comment), matched to this driver by name. See App's mergePublishedPlans for how it's read/merged.
+const ROUTE_PLAN_PUBLISH_STORAGE_KEY = 'kheloTechPublishedRoutePlans';
+// The reverse direction, this app -> admin - must match the exact key window.SHUTTLE_LEG_STORAGE_KEY
+// in ACT Travel Prototype.html reads. A recurring shuttle loop has no per-trip record anywhere until
+// a driver actually finishes a leg (there's no dispatcher/Route-Plan step to bill against the way a
+// one-off trip has), so this is the only place a completed one is ever reported - one entry per
+// completed leg, written the moment advanceShuttleLeg below closes it out, so the admin app can
+// materialize it into a real, already-Completed 'shuttle'-kind assignment for Live Fleet Tracking and
+// Billing.
+const SHUTTLE_LEG_STORAGE_KEY = 'kheloTechCompletedShuttleLegs';
+// Same append-and-cap pattern as the Stakeholder App's own reportOnCallMatch - a shuttle loop can run
+// legs all day, so this is capped rather than left to grow without bound.
+const reportCompletedShuttleLeg = (entry) => {
+    let all = [];
+    try { all = JSON.parse(localStorage.getItem(SHUTTLE_LEG_STORAGE_KEY) || '[]'); } catch (e) { all = []; }
+    try { localStorage.setItem(SHUTTLE_LEG_STORAGE_KEY, JSON.stringify([entry, ...all].slice(0, 200))); } catch (e) { /* storage unavailable - the local copy in this session still has it */ }
+};
+
+// The one genuinely bidirectional bridge in this whole system, for the On-Call ride matching flow -
+// must match the exact key window.OnCallTab's own sendOnCallNudge (App-level, ACT Travel
+// Prototype.html) and the Stakeholder App's own orchestration both use. The Stakeholder App (or an
+// admin's own manual assignment) creates an entry here addressed to one driver by id/name; this app
+// only ever flips that SAME entry's `status` field once its own driver responds (Accepted/Declined) -
+// it never creates entries of its own. Each entry: { id, requestId, driverId, driverName, vehicleId,
+// vehicleType, vendorName, origin, destination, route, passengers, sentAt, expiresAt, status:
+// 'Pending'|'Accepted'|'Declined'|'TimedOut', initiatedBy: 'stakeholder'|'admin' }.
+const ONCALL_NUDGE_STORAGE_KEY = 'kheloTechOnCallNudges';
+// This app -> the Stakeholder App's own orchestration - how busy this driver is right now, so a
+// nudge is only ever sent to someone actually free or close enough to done (the Stakeholder App's own
+// oncallNearEndThresholdMin setting decides "close enough"; this just reports the raw fact). Broadcast
+// on the same cadence/shape as reportMyLocation below. `busyUntil` is a real timestamp (derived from
+// the driver's own active trip's startedAt + estimatedDurationMin, the same fields liveEta already
+// reads), not a guess - null means genuinely free right now. `dropLocation` (the current trip's own
+// drop-off point) rides along too - the driver buffer logic (the Stakeholder App's own
+// candidatePickupEta, mirroring ACT Travel Prototype.html's window.driverPickupEta) needs to know
+// WHERE this driver will actually be once they're done, not just WHEN, to compute a real pickup ETA
+// for a new on-call ride instead of guessing from their static vehicle base.
+const DRIVER_AVAILABILITY_STORAGE_KEY = 'kheloTechDriverAvailability';
+const reportMyAvailability = (driverId, driverName, busyUntil, dropLocation) => {
+    let all = {};
+    try { all = JSON.parse(localStorage.getItem(DRIVER_AVAILABILITY_STORAGE_KEY) || '{}'); } catch (e) { all = {}; }
+    all[driverId] = { driverName, busyUntil, dropLocation: dropLocation || null, updatedAt: Date.now() };
+    try { localStorage.setItem(DRIVER_AVAILABILITY_STORAGE_KEY, JSON.stringify(all)); } catch (e) { /* storage unavailable - the Stakeholder App just won't see this driver as a candidate */ }
+};
 
 // Wraps the browser's Geolocation API in a promise - rejects with a real Error either when the API
 // isn't available at all (older browser, non-HTTPS/non-localhost origin) or when the browser's own
@@ -169,6 +231,65 @@ const getCurrentPositionAsync = () => new Promise((resolve, reject) => {
         { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
     );
 });
+
+// Mirrors ACT Travel Prototype.html's window.DRIVER_BASE_CITIES exactly (same names/coordinates) -
+// this app has no shared backend with the admin panel, so a raw GPS fix has to be snapped to one of
+// these named cities before it means anything on the admin side, whose proximity check only ever
+// compares named cities, never raw coordinates.
+const DRIVER_BASE_CITIES = [
+    { name: 'New Delhi', lat: 28.6139, lng: 77.2090 },
+    { name: 'Gurugram', lat: 28.4595, lng: 77.0266 },
+    { name: 'Noida', lat: 28.5355, lng: 77.3910 },
+    { name: 'Chandigarh', lat: 30.7333, lng: 76.7794 },
+    { name: 'Jaipur', lat: 26.9124, lng: 75.7873 },
+    { name: 'Lucknow', lat: 26.8467, lng: 80.9462 },
+    { name: 'Dehradun', lat: 30.3165, lng: 78.0322 },
+    { name: 'Bhopal', lat: 23.2599, lng: 77.4126 },
+    { name: 'Guwahati', lat: 26.1445, lng: 91.7362 },
+    { name: 'Shillong', lat: 25.5788, lng: 91.8933 },
+];
+// Nearest named city to a raw [lat, lng] fix - always returns one (there's no "too far to count" cutoff,
+// a coarse city-level guess is already the level of precision this whole mechanism works at).
+const nearestBaseCity = ([lat, lng]) => {
+    let best = null, bestDist = Infinity;
+    DRIVER_BASE_CITIES.forEach(c => {
+        const d = haversineKm([lat, lng], [c.lat, c.lng]);
+        if (d < bestDist) { bestDist = d; best = c.name; }
+    });
+    return best;
+};
+
+// Bridges this driver's live location to the admin panel over localStorage - same mechanism, and same
+// same-origin caveat, as every other cross-app bridge in these two files (see GEOFENCING_STORAGE_KEY's
+// own comment). Keyed by driver id since this localStorage is shared by whoever's using this browser
+// right now (a shared kiosk device, or just testing multiple demo accounts in turn) - each driver's
+// own last-reported location is stored separately, never overwritten by whoever happened to report
+// most recently under a different id.
+const DRIVER_LOCATIONS_STORAGE_KEY = 'kheloTechDriverLocations';
+const LOCATION_REPORT_INTERVAL_MS = 5 * 60 * 1000; // re-report every 5 minutes while logged in
+// Fix: a driver's admin-side location used to be either hand-typed (Base Location) or a manual
+// override (Current Location) - neither is actually "where the driver is right now" unless someone
+// remembers to update it. This reports the real thing, automatically, from the device this app is
+// running on. Real GPS only - there's no "simulate" fallback the way runGeofenceCheck has one (that
+// one fakes a position specifically to demo a location-gated action on demand); faking this one would
+// undercut the entire point of it being a real, not hand-set, signal. Meaningfully seeing this
+// resolve to somewhere other than "wherever the tester's own device actually is" therefore needs
+// either a real device physically near one of DRIVER_BASE_CITIES, or the browser's location spoofed
+// via devtools. Fails silently on purpose - a denied permission, an offline device, or an unsupported
+// browser just means nothing gets reported this cycle, not an error the driver has to deal with; the
+// admin side already treats "nothing reported" as "fall back to Base Location", never as a fault.
+const reportMyLocation = async (driverId) => {
+    if (!driverId) return;
+    try {
+        const coords = await getCurrentPositionAsync();
+        const city = nearestBaseCity(coords);
+        if (!city) return;
+        let all = {};
+        try { all = JSON.parse(localStorage.getItem(DRIVER_LOCATIONS_STORAGE_KEY) || '{}'); } catch (e) { all = {}; }
+        all[driverId] = { city, updatedAt: Date.now() };
+        localStorage.setItem(DRIVER_LOCATIONS_STORAGE_KEY, JSON.stringify(all));
+    } catch (e) { /* silent - see this function's own comment */ }
+};
 
 // Callable again (fix-list items 51/52), not a one-shot IIFE - see the sync effect in App that calls
 // this whenever ROAD_DISTANCE_FACTOR/AVG_ROAD_SPEED_KMH change.
@@ -355,6 +476,86 @@ const liveEta = (trip) => {
     return formatClockTime(new Date(Date.now() + remainingMin * 60000));
 };
 
+// The next scheduled departure clock-time for a recurring shuttle plan, stepped off its own
+// startTime/frequencyMinutes rather than stored anywhere - "06:00, every 30 min" always resolves to
+// the same next slot for a given moment, so there's nothing to keep in sync. Returns null once
+// today's operating window (endTime) has already passed.
+const nextShuttleDeparture = (plan) => {
+    const [sh, sm] = plan.startTime.split(':').map(Number);
+    const [eh, em] = plan.endTime.split(':').map(Number);
+    const startMin = sh * 60 + sm, endMin = eh * 60 + em;
+    const now = new Date();
+    const nowMin = now.getHours() * 60 + now.getMinutes();
+    if (nowMin < startMin) return { time: plan.startTime, inMin: startMin - nowMin };
+    if (nowMin >= endMin) return null;
+    const slotsElapsed = Math.ceil((nowMin - startMin) / plan.frequencyMinutes);
+    const nextMin = startMin + slotsElapsed * plan.frequencyMinutes;
+    if (nextMin >= endMin) return null;
+    return { time: `${String(Math.floor(nextMin / 60)).padStart(2, '0')}:${String(nextMin % 60).padStart(2, '0')}`, inMin: nextMin - nowMin };
+};
+
+/* ------------------------------------------------------------------ */
+/* Shuttle-trip progress/ETA math - a started shuttle trip (kind:      */
+/* 'shuttle', see App's startShuttleLoop/advanceShuttleLeg) carries a  */
+/* full ordered `stops` chain plus a `legIndex` for whichever leg is   */
+/* currently being driven, rather than the flat single origin/         */
+/* destination `route` a one-off assignment has - so it needs its own  */
+/* progress/ETA helpers instead of reusing derivedProgress/liveEta,    */
+/* which only ever know about one leg.                                 */
+/* ------------------------------------------------------------------ */
+
+// The distance/duration estimate for one specific leg of the chain (stops[i] -> stops[i+1]) - same
+// underlying window.tripEstimate every one-off trip already uses, just fed one leg at a time.
+const shuttleLegEstimate = (trip, i) => tripEstimate(`${trip.stops[i]} -> ${trip.stops[i + 1]}`);
+
+// 0-100 progress along ONLY the leg currently under way (not the whole loop) - drives the live map
+// marker's position on that one leg, the same way derivedProgress drives a one-off trip's marker.
+const shuttleLegProgress = (trip) => {
+    if (trip.status === 'Completed') return 100;
+    if (trip.legIndex == null || !trip.legStartedAt) return 0;
+    const est = shuttleLegEstimate(trip, trip.legIndex);
+    if (!est) return 0;
+    const elapsedMin = (Date.now() - trip.legStartedAt) / 60000;
+    return Math.max(0, Math.min(99, Math.round((elapsedMin / est.durationMin) * 100)));
+};
+
+// done/current/upcoming for stop index `i` of the chain - the stop list's own status dot/highlight
+// reads straight off this rather than re-deriving it inline in multiple places.
+const shuttleStopStatus = (trip, i) => {
+    if (trip.status === 'Completed') return 'done';
+    if (trip.legIndex == null) return i === 0 ? 'current' : 'upcoming';
+    if (i <= trip.legIndex) return 'done';
+    if (i === trip.legIndex + 1) return 'current';
+    return 'upcoming';
+};
+
+// A real clock-time ETA for stop index `i` (never called for i === 0, the starting point itself -
+// that one just shows the scheduled/actual departure time instead). Before the loop has started,
+// every stop's ETA stacks forward off the scheduled departure time; once under way, it stacks off
+// right now plus however much of the CURRENT leg is actually still left, so an already-running
+// loop's ETAs shift live the same way a one-off trip's liveEta does.
+const shuttleStopEta = (trip, i) => {
+    if (trip.status === 'Completed') return null;
+    let baseTime, fromLeg;
+    if (trip.legIndex == null) {
+        const [h, m] = trip.time.split(':').map(Number);
+        baseTime = new Date();
+        baseTime.setHours(h, m, 0, 0);
+        fromLeg = 0;
+    } else {
+        const est = shuttleLegEstimate(trip, trip.legIndex);
+        const remainingMin = est ? est.durationMin * (1 - shuttleLegProgress(trip) / 100) : 0;
+        baseTime = new Date(Date.now() + remainingMin * 60000);
+        fromLeg = trip.legIndex + 1;
+    }
+    let addMin = 0;
+    for (let leg = fromLeg; leg < i; leg++) {
+        const est = shuttleLegEstimate(trip, leg);
+        addMin += est ? est.durationMin : 0;
+    }
+    return formatClockTime(new Date(baseTime.getTime() + addMin * 60000));
+};
+
 const STATUS_COLOR = {
     'In Transit': 'bg-emerald-100 text-emerald-700',
     'Delayed': 'bg-amber-100 text-amber-700',
@@ -367,6 +568,9 @@ const STATUS_COLOR = {
 };
 
 const ICONS = {
+    // TopBar's own "Simulate: Incoming On-Call Request" button - same phone-receiver glyph the
+    // admin/stakeholder apps already use for on-call, kept visually consistent across all three.
+    phone: ['M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z'],
     home: ['M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z', 'M9 22V12h6v10'],
     trips: ['M19 4H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2z', 'M16 2v4M8 2v4M3 10h18'],
     user: ['M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2', 'M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z'],
@@ -376,6 +580,7 @@ const ICONS = {
     logout: ['M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4', 'M16 17l5-5-5-5', 'M21 12H9'],
     truck: ['M14 16H9m10 0h3v-3.15a1 1 0 0 0-.84-.99L16 11l-2.7-3.6a1 1 0 0 0-.8-.4H8.24a1 1 0 0 0-.8.4L5 11l-5.16.86a1 1 0 0 0-.84.99V16h3', 'M6 16a2 2 0 1 0 0-4 2 2 0 0 0 0 4z', 'M18 16a2 2 0 1 0 0-4 2 2 0 0 0 0 4z'],
     play: ['M6 3l14 9-14 9V3z'],
+    arrowRight: ['M5 12h14', 'm12 5 7 7-7 7'],
     lock: ['M19 11H5a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7a2 2 0 0 0-2-2z', 'M7 11V7a5 5 0 0 1 10 0v4'],
     shuffle: ['m17 2 4 4-4 4', 'M3 11v-1a4 4 0 0 1 4-4h14', 'm7 22-4-4 4-4', 'M21 13v1a4 4 0 0 1-4 4H3'],
     pin: ['M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z', 'M12 7a3 3 0 1 0 0 6 3 3 0 0 0 0-6z'],
@@ -515,7 +720,7 @@ function LoginScreen({ drivers, onLogin }) {
     );
 }
 
-function TopBar({ driver, title, onBack, onLogout, onSimulateReassignment, onSimulateVehicleReassignment, simulateAtLocation, onToggleSimulateLocation, isOnline, onToggleSimulateOffline }) {
+function TopBar({ driver, title, onBack, onLogout, onSimulateReassignment, onSimulateVehicleReassignment, simulateAtLocation, onToggleSimulateLocation, isOnline, onToggleSimulateOffline, onSimulateOnCallNudge }) {
     return (
         <div className="sticky top-0 z-10 bg-brandBlue text-white px-4 py-3 flex items-center gap-3 shadow-md">
             {onBack ? (
@@ -566,6 +771,17 @@ function TopBar({ driver, title, onBack, onLogout, onSimulateReassignment, onSim
                     <Icon name="truck" size={17} />
                 </button>
             )}
+            {/* Demo-only: manufactures a real, well-formed entry on the same on-call nudge bridge
+                (window.ONCALL_NUDGE_STORAGE_KEY) a genuine Stakeholder App request would write, so the
+                driver-side "matched before admin intervenes" experience (OnCallNudgeModal, Accept ->
+                a real Scheduled trip) can be shown on its own, without needing the Stakeholder App's
+                own on-call orchestration actually running in a second tab. */}
+            {!onBack && onSimulateOnCallNudge && (
+                <button onClick={onSimulateOnCallNudge} className="p-2 hover:bg-white/10 rounded-lg text-violet-300"
+                    title="Demo only: simulate an incoming on-call ride request matched to this driver" aria-label="Simulate incoming on-call request (demo)">
+                    <Icon name="phone" size={17} />
+                </button>
+            )}
             {!onBack && onSimulateReassignment && (
                 <button onClick={onSimulateReassignment} className="p-2 hover:bg-white/10 rounded-lg text-amber-300"
                     title="Demo only: simulate an admin reassigning this driver's active/next trip" aria-label="Simulate trip reassignment (demo)">
@@ -585,6 +801,7 @@ function BottomNav({ activeTab, onChange }) {
     const tabs = [
         { key: 'home', label: 'Home', icon: 'home' },
         { key: 'trips', label: 'My Trips', icon: 'trips' },
+        { key: 'shuttle', label: 'Shuttle', icon: 'truck' },
         { key: 'profile', label: 'Profile', icon: 'user' },
     ];
     return (
@@ -721,6 +938,125 @@ function RouteMap({ route, progress, heightClass = 'h-48', showZoomControl = fal
     }, [progress, route]);
 
     return <div ref={mapEl} className={`${heightClass} w-full border-t border-slate-100`} />;
+}
+
+// Multi-stop variant of RouteMap for a recurring shuttle's full ordered stop chain (not just two
+// points) - every stop gets its own dot (green = first pickup, red = final destination, amber = any
+// stop in between), one dashed polyline runs through all of them in order, and the live position
+// marker (when `legIndex`/`legProgress` are given) interpolates along ONLY the leg currently under
+// way, same straight-line-between-two-points approach RouteMap already uses for its one leg.
+function ShuttleRouteMap({ stops, legIndex, legProgress, heightClass = 'h-60', showZoomControl = false }) {
+    const mapEl = useRef(null);
+    const mapRef = useRef(null);
+    const liveMarkerRef = useRef(null);
+    const [mapsReady, setMapsReady] = useState(!!(window.google && window.google.maps));
+    const stopsKey = stops.join('|');
+
+    useEffect(() => {
+        if (mapsReady) return;
+        const id = setInterval(() => {
+            if (window.google && window.google.maps) { setMapsReady(true); clearInterval(id); }
+        }, 200);
+        return () => clearInterval(id);
+    }, [mapsReady]);
+
+    useEffect(() => {
+        if (!mapEl.current || !mapsReady) return;
+        const coords = stops.map(name => LOCATION_COORDS[name]).filter(Boolean);
+        if (coords.length < 2) return;
+
+        const DotOverlay = makeDotOverlayClass();
+        const toLatLng = ([lat, lng]) => new google.maps.LatLng(lat, lng);
+
+        const map = new google.maps.Map(mapEl.current, {
+            center: toLatLng(coords[0]), zoom: 12,
+            disableDefaultUI: true, zoomControl: showZoomControl,
+            gestureHandling: showZoomControl ? 'greedy' : 'none',
+        });
+        mapRef.current = map;
+
+        stops.forEach((name, i) => {
+            const c = LOCATION_COORDS[name];
+            if (!c) return;
+            const color = i === 0 ? '#10B981' : i === stops.length - 1 ? '#EF4444' : '#F59E0B';
+            new DotOverlay(toLatLng(c), color, 12, name).setMap(map);
+        });
+
+        // Same repeating-line-symbol dash trick RouteMap uses, just fed every stop's coordinate in
+        // order instead of only two.
+        new google.maps.Polyline({
+            path: coords.map(toLatLng),
+            map, strokeColor: '#3B82F6', strokeOpacity: 0,
+            icons: [{ icon: { path: 'M 0,-1 0,1', strokeOpacity: 1, scale: 3 }, offset: '0', repeat: '10px' }],
+        });
+
+        if (legIndex != null && legProgress != null) {
+            const o = LOCATION_COORDS[stops[legIndex]], d = LOCATION_COORDS[stops[legIndex + 1]];
+            if (o && d) {
+                const liveDot = new DotOverlay(toLatLng(posAlongRoute(o, d, legProgress)), '#3B82F6', 16, 'Vehicle - live position');
+                liveDot.setMap(map);
+                liveMarkerRef.current = liveDot;
+            }
+        }
+
+        const bounds = new google.maps.LatLngBounds();
+        coords.forEach(c => bounds.extend(toLatLng(c)));
+        map.fitBounds(bounds, 28);
+
+        return () => { mapRef.current = null; liveMarkerRef.current = null; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [stopsKey, showZoomControl, mapsReady]);
+
+    useEffect(() => {
+        if (legIndex == null || legProgress == null || !liveMarkerRef.current) return;
+        const o = LOCATION_COORDS[stops[legIndex]], d = LOCATION_COORDS[stops[legIndex + 1]];
+        const pos = o && d ? posAlongRoute(o, d, legProgress) : null;
+        if (pos) liveMarkerRef.current.setPosition(new google.maps.LatLng(pos[0], pos[1]));
+    }, [legProgress, legIndex, stopsKey]);
+
+    return <div ref={mapEl} className={`${heightClass} w-full border-t border-slate-100`} />;
+}
+
+// The full ordered stop timeline for a shuttle trip - each stop's own done/current/upcoming state
+// (window.shuttleStopStatus) and, for anything after the very first, a live ETA
+// (window.shuttleStopEta). Shared by every screen that shows a shuttle trip (ShuttleTripScreen,
+// ShuttleTripCard's parent list) so none of them can ever show a different ETA for the same stop.
+function ShuttleStopList({ trip }) {
+    return (
+        <div className="flex gap-3">
+            <div className="flex flex-col items-center pt-1.5">
+                {trip.stops.map((_, i) => {
+                    const status = shuttleStopStatus(trip, i);
+                    const dotColor = status === 'done' ? 'bg-emerald-500 ring-emerald-100' : status === 'current' ? 'bg-brandAccent ring-blue-100' : 'bg-slate-300 ring-slate-100';
+                    return (
+                        <React.Fragment key={i}>
+                            <span className={`w-3 h-3 rounded-full ring-4 shrink-0 ${dotColor} ${status === 'current' ? 'sos-pulse' : ''}`} />
+                            {i < trip.stops.length - 1 && <span className="w-0.5 flex-1 bg-slate-200 my-1" />}
+                        </React.Fragment>
+                    );
+                })}
+            </div>
+            <div className="flex-1 min-w-0 space-y-3">
+                {trip.stops.map((name, i) => {
+                    const status = shuttleStopStatus(trip, i);
+                    const eta = i > 0 ? shuttleStopEta(trip, i) : null;
+                    return (
+                        <div key={i} className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                                <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">
+                                    {i === 0 ? 'Start' : i === trip.stops.length - 1 ? 'Final Stop' : `Stop ${i}`}
+                                </p>
+                                <p className={`text-sm font-semibold truncate ${status === 'upcoming' ? 'text-slate-500' : 'text-slate-800'}`}>{name}</p>
+                            </div>
+                            <p className={`text-xs font-medium shrink-0 ${status === 'current' ? 'text-brandAccent font-bold' : 'text-slate-400'}`}>
+                                {i === 0 ? trip.time : (eta || '—')}
+                            </p>
+                        </div>
+                    );
+                })}
+            </div>
+        </div>
+    );
 }
 
 function RoutePath({ route, large }) {
@@ -965,6 +1301,174 @@ function HomeOngoingHero({ trip, fuelProfile, onLogRefuel, onComplete, onOpenSos
     );
 }
 
+// The one, complete view of a shuttle-loop trip (kind: 'shuttle') - covers all three states it can
+// be in (Scheduled/not yet departed, In Transit or Delayed/under way, Completed) and is used BOTH as
+// Home's featured card while a loop is the driver's current business AND as the full page reached by
+// tapping into it from My Trips or the Shuttle tab, so there's exactly one place this trip's full
+// picture is built, not two that could quietly drift apart. Same map-first/content-sheet/actions-
+// pinned-at-bottom layering as HomeOngoingHero, but built around the full stop chain
+// (ShuttleRouteMap/ShuttleStopList) instead of a single origin/destination - a shuttle loop's whole
+// point is more than one leg, and hiding everything but the current leg's two endpoints (the old
+// behaviour, reusing the one-off TripDetailScreen) was exactly the gap this redesign fixes.
+function ShuttleTripScreen({ trip, hasActiveTrip, onStart, onAdvance, onOpenSos, onResolveSos, fuelProfile, onLogRefuel }) {
+    const isScheduled = trip.status === 'Scheduled';
+    const isRunning = trip.status === 'In Transit' || trip.status === 'Delayed';
+    const isCompleted = trip.status === 'Completed';
+    const startBlocked = isScheduled && hasActiveTrip;
+    const legEst = isRunning ? shuttleLegEstimate(trip, trip.legIndex) : null;
+    const legProgress = isRunning ? shuttleLegProgress(trip) : 0;
+    const nextStopIndex = isRunning ? trip.legIndex + 1 : 1;
+    const isFinalLeg = isRunning && nextStopIndex === trip.stops.length - 1;
+    const canSos = isRunning && !trip.sos;
+
+    return (
+        <div className="animate-in">
+            <div className="relative">
+                <ShuttleRouteMap stops={trip.stops} legIndex={isRunning ? trip.legIndex : null} legProgress={isRunning ? legProgress : null}
+                    heightClass="h-60" showZoomControl />
+                <div className="absolute top-3 left-3 z-[500]"><Badge status={trip.status} /></div>
+                {isRunning && (
+                    <div className="absolute top-3 right-3 z-[500] bg-white/95 backdrop-blur px-2.5 py-1 rounded-full text-[11px] font-semibold text-slate-600 shadow-sm">
+                        Leg {trip.legIndex + 1} of {trip.stops.length - 1}
+                    </div>
+                )}
+            </div>
+
+            <div className="-mt-5 relative z-[400] bg-bgLight rounded-t-3xl px-4 pt-5 pb-5 space-y-4">
+                {trip.sosQueued && !trip.sos && (
+                    <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl px-4 py-3 text-sm flex items-center gap-2">
+                        <Icon name="alert" size={18} />
+                        <span className="font-semibold">SOS saved - will send automatically once you're back online</span>
+                    </div>
+                )}
+                {trip.sos && (
+                    <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm flex items-center justify-between gap-3 sos-pulse">
+                        <div className="flex items-center gap-2">
+                            <Icon name="alert" size={18} />
+                            <span className="font-semibold">SOS reported - help is on the way</span>
+                        </div>
+                        <button onClick={onResolveSos} className="text-xs font-semibold underline shrink-0">Mark Safe</button>
+                    </div>
+                )}
+
+                {isCompleted ? (
+                    <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 flex items-center gap-3">
+                        <span className="w-9 h-9 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center shrink-0">
+                            <Icon name="check" size={18} />
+                        </span>
+                        <div>
+                            <p className="text-sm font-bold text-emerald-800">Loop Complete</p>
+                            <p className="text-xs text-emerald-600 mt-0.5">Every stop on this run was reached. Start another from the Shuttle tab whenever you're ready.</p>
+                        </div>
+                    </div>
+                ) : (
+                    <div className="bg-white rounded-2xl border border-slate-200 shadow-card p-4">
+                        <div className="flex items-start justify-between gap-3">
+                            <div>
+                                <p className="flex items-center gap-1 text-[11px] font-semibold text-slate-400 uppercase tracking-wide">
+                                    <Icon name="clock" size={11} />{isScheduled ? 'First Stop' : 'Next Stop'}
+                                </p>
+                                <p className="text-lg font-bold text-slate-800 leading-tight mt-0.5">{trip.stops[nextStopIndex]}</p>
+                                <p className="text-xs text-slate-400 mt-0.5">ETA {shuttleStopEta(trip, nextStopIndex) || '—'}</p>
+                            </div>
+                            {isRunning && (
+                                <div className="text-right shrink-0">
+                                    <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide">Leg Progress</p>
+                                    <p className="text-2xl font-bold text-brandAccent leading-tight mt-0.5">{legProgress}%</p>
+                                </div>
+                            )}
+                        </div>
+                        {isRunning && (
+                            <div className="h-2 rounded-full bg-slate-100 overflow-hidden mt-3">
+                                <div className="h-full bg-brandAccent transition-all" style={{ width: `${legProgress}%` }} />
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-card p-4">
+                    <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-3">Full Loop</p>
+                    <ShuttleStopList trip={trip} />
+                </div>
+
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-card p-4 grid grid-cols-2 gap-4 text-sm">
+                    <div>
+                        <p className="flex items-center gap-1 text-[10px] text-slate-400 uppercase tracking-wide"><Icon name="truck" size={11} />Vehicle</p>
+                        <p className="font-medium text-slate-800 mt-0.5">{trip.vehicleId}</p>
+                        <p className="text-xs text-slate-500">{trip.type}</p>
+                    </div>
+                    <div>
+                        <p className="flex items-center gap-1 text-[10px] text-slate-400 uppercase tracking-wide"><Icon name="building" size={11} />Vendor</p>
+                        <p className="font-medium text-slate-800 mt-0.5">{trip.vendorName}</p>
+                    </div>
+                    <div>
+                        <p className="flex items-center gap-1 text-[10px] text-slate-400 uppercase tracking-wide"><Icon name="distance" size={11} />{isRunning ? 'Current Leg' : 'Full Loop'}</p>
+                        <p className="font-medium text-slate-800 mt-0.5">
+                            {isRunning ? (legEst ? `${legEst.distanceKm} km` : '—') : `${trip.stops.length - 1} legs`}
+                        </p>
+                    </div>
+                    <div>
+                        <p className="flex items-center gap-1 text-[10px] text-slate-400 uppercase tracking-wide"><Icon name="clock" size={11} />Frequency</p>
+                        <p className="font-medium text-slate-800 mt-0.5">Every {trip.frequencyMinutes} min</p>
+                    </div>
+                </div>
+
+                {fuelProfile && (
+                    <div className="bg-white rounded-2xl border border-slate-200 shadow-card p-4">
+                        <div className="flex items-center justify-between mb-1.5">
+                            <p className="flex items-center gap-1 text-[10px] text-slate-400 uppercase tracking-wide"><Icon name="droplet" size={11} />Fuel</p>
+                            <button onClick={onLogRefuel} className="text-[11px] font-semibold text-brandAccent hover:underline">Log Refuel</button>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <div className="flex-1 h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                                <div className={`h-full rounded-full transition-all ${fuelProfile.fuelCritical ? 'bg-red-500' : fuelProfile.fuelLevel < 50 ? 'bg-amber-500' : 'bg-emerald-500'}`}
+                                    style={{ width: `${fuelProfile.fuelLevel}%` }} />
+                            </div>
+                            <span className="text-xs font-semibold text-slate-600 w-9 text-right">{fuelProfile.fuelLevel}%</span>
+                        </div>
+                        <p className="text-[10px] text-slate-400 mt-1">
+                            {Math.round(fuelProfile.kmSinceRefuel)} / {fuelProfile.refuelCycleKm} km &middot; Last {fuelProfile.lastRefuelDate || '—'}{fuelProfile.lastRefuelSource ? ` (${fuelProfile.lastRefuelSource})` : ''}
+                        </p>
+                        {fuelProfile.dueForRefuel && (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 mt-1">
+                                <Icon name="alert" size={10} />Due for refuel
+                            </span>
+                        )}
+                    </div>
+                )}
+
+                {startBlocked && (
+                    <div className="w-full py-3 rounded-xl bg-slate-100 text-slate-400 text-sm font-semibold flex items-center justify-center gap-2">
+                        <Icon name="lock" size={15} />Finish your current trip before starting this loop
+                    </div>
+                )}
+
+                {isScheduled && !startBlocked && (
+                    <button onClick={onStart}
+                        className="w-full py-3.5 rounded-full bg-brandBlue text-white text-sm font-bold hover:bg-slate-800 active:scale-[0.99] transition flex items-center justify-center gap-2 shadow-sm">
+                        <Icon name="play" size={16} />Start Trip
+                    </button>
+                )}
+
+                {isRunning && (
+                    <div className="flex items-center gap-3">
+                        <button onClick={onAdvance}
+                            className="flex-1 py-3.5 rounded-full bg-brandBlue text-white text-sm font-bold hover:bg-slate-800 active:scale-[0.99] transition flex items-center justify-center gap-2 shadow-sm">
+                            <Icon name="check" size={16} />{isFinalLeg ? 'Complete Loop' : `Arrived at ${trip.stops[nextStopIndex]}`}
+                        </button>
+                        {canSos && (
+                            <button onClick={onOpenSos} title="Report Emergency / SOS" aria-label="Report Emergency / SOS"
+                                className="w-14 h-14 rounded-full bg-red-600 text-white flex items-center justify-center shrink-0 hover:bg-red-700 active:scale-[0.97] transition shadow-sm">
+                                <Icon name="alert" size={22} />
+                            </button>
+                        )}
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+}
+
 // A slim, always-visible strip naming whichever vehicle this driver is currently driving - unlike
 // everything else on Home, this isn't conditional on a trip being under way, so a driver can always
 // glance at Home and know what they're assigned to right now even between trips. The vehicle's own
@@ -988,15 +1492,54 @@ function CurrentVehicleCard({ driver, vehicleType }) {
     );
 }
 
+// A compact awareness card for Home when this driver is rostered on a recurring shuttle (see App's
+// myShuttlePlan) but no loop is actually under way right now - without this, a shuttle driver's Home
+// looked exactly like someone with nothing scheduled at all, with no hint the Shuttle tab exists.
+function ShuttleRosterCard({ plan, activeLoopTrip, onGoToShuttle }) {
+    const next = nextShuttleDeparture(plan);
+    return (
+        <button type="button" onClick={onGoToShuttle}
+            className="w-full text-left bg-white rounded-2xl border border-slate-200 shadow-sm p-4 hover:border-brandAccent transition">
+            <div className="flex items-center justify-between mb-2">
+                <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 px-2 py-1 rounded-full">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />Recurring Shuttle
+                </span>
+                <Icon name="arrowRight" size={14} className="text-slate-300 shrink-0" />
+            </div>
+            <div className="flex items-center gap-1.5 flex-wrap text-sm font-semibold text-slate-800">
+                {plan.origins.map((loc, i) => (
+                    <React.Fragment key={i}>
+                        {i > 0 && <Icon name="arrowRight" size={11} className="text-slate-300 shrink-0" />}
+                        <span>{loc}</span>
+                    </React.Fragment>
+                ))}
+                <Icon name="arrowRight" size={11} className="text-slate-300 shrink-0" />
+                <span>{plan.destination}</span>
+            </div>
+            <p className="text-xs text-slate-400 mt-2">
+                {activeLoopTrip ? 'A loop is ready to start - tap to begin.' : next ? `Next departure ${next.time} (~${next.inMin} min)` : 'Service has ended for today.'}
+            </p>
+        </button>
+    );
+}
+
 // Home tab - deliberately narrow: the driver's current vehicle (always visible, see
 // CurrentVehicleCard), a reassignment notice (if any, since it's blocking and needs acknowledgement
 // no matter what else is going on), and whichever single trip is actually under way right now, shown
-// in full via HomeOngoingHero. Everything else (upcoming, completed, the full list) lives on My
-// Trips - Home is "what's happening right now", not a second copy of the full trip list.
-function HomeScreen({ trips, assignments, fuelState, driver, vehicleType, onAcknowledge, onComplete, onOpenSos, onResolveSos, onLogRefuel, onGoToTrips }) {
+// in full via HomeOngoingHero (a one-off dispatch) or ShuttleTripScreen (a recurring loop - the full
+// multi-stop view, not the flat two-point one a one-off trip gets, per the redesign this replaced).
+// Everything else (upcoming, completed, the full list) lives on My Trips - Home is "what's happening
+// right now", not a second copy of the full trip list. A driver rostered on a shuttle plan but with
+// no loop actually running yet still gets a compact awareness card (ShuttleRosterCard) rather than
+// looking exactly like someone with nothing scheduled at all.
+function HomeScreen({ trips, assignments, fuelState, driver, vehicleType, shuttlePlan, activeLoopTrip, hasActiveTrip,
+    onAcknowledge, onComplete, onOpenSos, onResolveSos, onAdvanceShuttleLeg, onLogRefuel, onGoToTrips, onGoToShuttle }) {
     const reassignedTrips = trips.filter(t => t.reassigned);
-    const ongoing = trips.find(t => !t.reassigned && (t.status === 'In Transit' || t.status === 'Delayed')) || null;
-    const nextUpcoming = trips.filter(t => !t.reassigned && t.status === 'Scheduled').sort((a, b) => a.time.localeCompare(b.time))[0];
+    // One-off trips only - a shuttle loop (Scheduled or running) is handled by its own branches below,
+    // since it needs the full stop chain, not the flat single route a one-off trip has.
+    const ongoing = trips.find(t => !t.reassigned && t.kind !== 'shuttle' && (t.status === 'In Transit' || t.status === 'Delayed')) || null;
+    const nextUpcoming = trips.filter(t => !t.reassigned && t.kind !== 'shuttle' && t.status === 'Scheduled').sort((a, b) => a.time.localeCompare(b.time))[0];
+    const shuttleRunning = activeLoopTrip && (activeLoopTrip.status === 'In Transit' || activeLoopTrip.status === 'Delayed');
 
     return (
         <div>
@@ -1014,9 +1557,15 @@ function HomeScreen({ trips, assignments, fuelState, driver, vehicleType, onAckn
                         onLogRefuel={() => onLogRefuel(ongoing.vehicleId)} onComplete={() => onComplete(ongoing)}
                         onOpenSos={() => onOpenSos(ongoing.id)} onResolveSos={() => onResolveSos(ongoing.id)} />
                 </div>
+            ) : shuttleRunning ? (
+                <div className="mt-4">
+                    <ShuttleTripScreen trip={activeLoopTrip} hasActiveTrip={hasActiveTrip} onAdvance={() => onAdvanceShuttleLeg(activeLoopTrip)}
+                        onOpenSos={() => onOpenSos(activeLoopTrip.id)} onResolveSos={() => onResolveSos(activeLoopTrip.id)}
+                        fuelProfile={vehicleFuelProfile(activeLoopTrip, assignments, fuelState)} onLogRefuel={() => onLogRefuel(activeLoopTrip.vehicleId)} />
+                </div>
             ) : reassignedTrips.length === 0 && (
-                <div className="p-4">
-                    <div className="text-center py-14">
+                <div className="p-4 space-y-3">
+                    <div className="text-center py-10">
                         <div className="w-14 h-14 rounded-2xl bg-slate-100 text-slate-400 flex items-center justify-center mx-auto mb-3">
                             <Icon name="truck" size={26} />
                         </div>
@@ -1026,10 +1575,12 @@ function HomeScreen({ trips, assignments, fuelState, driver, vehicleType, onAckn
                                 <p className="text-sm text-slate-400 mt-1">Your next trip departs at <span className="font-semibold text-slate-600">{nextUpcoming.time}</span>.</p>
                                 <button onClick={onGoToTrips} className="mt-4 text-sm font-semibold text-brandAccent hover:underline">Go to My Trips to start it &rarr;</button>
                             </>
-                        ) : (
+                        ) : !shuttlePlan && (
                             <p className="text-sm text-slate-400 mt-1">You don't have any trips scheduled right now.</p>
                         )}
                     </div>
+
+                    {shuttlePlan && <ShuttleRosterCard plan={shuttlePlan} activeLoopTrip={activeLoopTrip} onGoToShuttle={onGoToShuttle} />}
                 </div>
             )}
         </div>
@@ -1039,6 +1590,47 @@ function HomeScreen({ trips, assignments, fuelState, driver, vehicleType, onAckn
 // My Trips tab - the complete list, every trip grouped by where it stands (Reassigned / Ongoing /
 // Upcoming / Completed). The Ongoing trip shown here is the same OngoingTripCard as Home's, just
 // sitting alongside the rest of the list instead of being the only thing on screen.
+// Compact My Trips/Shuttle-tab row for a shuttle loop, whatever status it's in - tapping in opens the
+// same full ShuttleTripScreen every other shuttle surface in this app uses, rather than a plain
+// RoutePath row (what every other card here renders) that could only ever show the loop's flattened
+// first-stop -> last-stop fallback, not its real ordered chain.
+function ShuttleTripCard({ trip, onSelect }) {
+    const isRunning = trip.status === 'In Transit' || trip.status === 'Delayed';
+    const legProgress = isRunning ? shuttleLegProgress(trip) : null;
+    return (
+        <button onClick={onSelect} className="w-full text-left bg-white rounded-2xl border border-slate-200 shadow-card p-5 hover:border-brandAccent transition">
+            <div className="flex justify-between items-start gap-3 mb-3">
+                <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 px-2 py-1 rounded-full">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />Recurring Shuttle
+                </span>
+                <Badge status={trip.status} />
+            </div>
+            <div className="flex items-center gap-1.5 flex-wrap text-sm font-semibold text-slate-800">
+                {trip.stops.map((name, i) => (
+                    <React.Fragment key={i}>
+                        {i > 0 && <Icon name="arrowRight" size={11} className="text-slate-300 shrink-0" />}
+                        <span className={isRunning && i === trip.legIndex + 1 ? 'text-brandAccent' : ''}>{name}</span>
+                    </React.Fragment>
+                ))}
+            </div>
+            {legProgress != null ? (
+                <div className="mt-3 pt-3 border-t border-slate-100">
+                    <div className="flex justify-between text-xs text-slate-500 mb-1">
+                        <span>Leg {trip.legIndex + 1} of {trip.stops.length - 1}</span><span>{legProgress}%</span>
+                    </div>
+                    <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
+                        <div className="h-full bg-brandAccent transition-all" style={{ width: `${legProgress}%` }} />
+                    </div>
+                </div>
+            ) : (
+                <p className="text-xs text-slate-400 mt-3 pt-3 border-t border-slate-100">
+                    {trip.status === 'Completed' ? 'Loop complete.' : `Departs ${trip.time} - tap to start.`}
+                </p>
+            )}
+        </button>
+    );
+}
+
 function MyTripsScreen({ trips, onSelect, onStartTrip, hasActiveTrip, onAcknowledge }) {
     // Tracks which single trip's route map is currently expanded inline. Starting a trip auto-expands
     // it; the id keeps matching the same trip even after it moves from the Upcoming section into
@@ -1056,13 +1648,17 @@ function MyTripsScreen({ trips, onSelect, onStartTrip, hasActiveTrip, onAcknowle
     }
 
     // A reassigned trip is pulled out of its normal Ongoing/Upcoming grouping entirely - it's no
-    // longer actionable, it needs to be impossible to miss, so it gets its own section up top.
+    // longer actionable, it needs to be impossible to miss, so it gets its own section up top. A
+    // shuttle loop (any status) gets its own section too, just below - a flat RoutePath row (what
+    // these other groupings all render) can only ever show its collapsed first-stop -> last-stop
+    // fallback, not the full chain, so it needs ShuttleTripCard/ShuttleTripScreen instead.
     const reassignedTrips = trips.filter(t => t.reassigned);
+    const shuttleTrip = trips.find(t => t.kind === 'shuttle') || null;
     // "Ongoing" covers both In Transit and Delayed - either way the trip has been started and is
     // actively running, so it deserves top billing over trips that haven't started yet.
-    const ongoingTrips = trips.filter(t => !t.reassigned && (t.status === 'In Transit' || t.status === 'Delayed'));
-    const upcomingTrips = trips.filter(t => !t.reassigned && t.status === 'Scheduled').sort((a, b) => a.time.localeCompare(b.time));
-    const pastTrips = trips.filter(t => !t.reassigned && t.status === 'Completed').sort((a, b) => a.time.localeCompare(b.time));
+    const ongoingTrips = trips.filter(t => !t.reassigned && t.kind !== 'shuttle' && (t.status === 'In Transit' || t.status === 'Delayed'));
+    const upcomingTrips = trips.filter(t => !t.reassigned && t.kind !== 'shuttle' && t.status === 'Scheduled').sort((a, b) => a.time.localeCompare(b.time));
+    const pastTrips = trips.filter(t => !t.reassigned && t.kind !== 'shuttle' && t.status === 'Completed').sort((a, b) => a.time.localeCompare(b.time));
 
     return (
         <div className="p-4 space-y-6 animate-in">
@@ -1074,6 +1670,13 @@ function MyTripsScreen({ trips, onSelect, onStartTrip, hasActiveTrip, onAcknowle
                     <div className="space-y-4">
                         {reassignedTrips.map(t => <ReassignedTripCard key={t.id} trip={t} onAcknowledge={() => onAcknowledge(t.id)} />)}
                     </div>
+                </div>
+            )}
+
+            {shuttleTrip && (
+                <div>
+                    <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Recurring Shuttle</h4>
+                    <ShuttleTripCard trip={shuttleTrip} onSelect={() => onSelect(shuttleTrip.id)} />
                 </div>
             )}
 
@@ -1152,6 +1755,152 @@ function MyTripsScreen({ trips, onSelect, onStartTrip, hasActiveTrip, onAcknowle
                         ))}
                     </div>
                 </div>
+            )}
+        </div>
+    );
+}
+
+// Static schedule-preview stepper for a loop that hasn't started yet - same "full ordered stop chain,
+// one dot per stop" visual language as ShuttleStopList (used once a loop is actually running), but
+// working off tripEstimate's own leg-by-leg minutes rather than shuttleStopEta/shuttleLegProgress,
+// which both require a real in-progress `trip` this screen doesn't have yet. Every stop reads as
+// "upcoming" here on purpose - nothing about this loop is under way until Start Next Loop is tapped.
+// A real clock-time ETA from an "HH:MM" anchor plus a minute offset - same base-time-plus-offset shape
+// shuttleStopEta already uses for an in-progress loop, just taking the anchor as a plain string instead
+// of deriving it from a live trip, since this preview runs before any trip exists.
+const clockPlusMinutes = (hhmm, minutes) => {
+    const [h, m] = hhmm.split(':').map(Number);
+    const base = new Date();
+    base.setHours(h, m, 0, 0);
+    return formatClockTime(new Date(base.getTime() + minutes * 60000));
+};
+
+function ShuttlePlanStopPreview({ stops, baseTime }) {
+    let cumulative = 0;
+    return (
+        <div className="flex gap-3">
+            <div className="flex flex-col items-center pt-1.5">
+                {stops.map((_, i) => (
+                    <React.Fragment key={i}>
+                        <span className={`w-3 h-3 rounded-full ring-4 shrink-0 ${i === 0 ? 'bg-brandAccent ring-blue-100' : i === stops.length - 1 ? 'bg-emerald-500 ring-emerald-100' : 'bg-slate-300 ring-slate-100'}`} />
+                        {i < stops.length - 1 && <span className="w-0.5 flex-1 bg-slate-200 my-1" />}
+                    </React.Fragment>
+                ))}
+            </div>
+            <div className="flex-1 min-w-0 space-y-3">
+                {stops.map((name, i) => {
+                    if (i > 0) {
+                        const leg = tripEstimate(`${stops[i - 1]} -> ${name}`);
+                        if (leg) cumulative += Math.max(0, leg.durationMin);
+                    }
+                    const eta = baseTime ? clockPlusMinutes(baseTime, cumulative) : null;
+                    return (
+                        <div key={i} className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                                <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">
+                                    {i === 0 ? 'Start' : i === stops.length - 1 ? 'Final Stop' : `Stop ${i}`}
+                                </p>
+                                <p className="text-sm font-semibold text-slate-800 truncate">{name}</p>
+                                {i > 0 && <p className="text-xs text-slate-400 mt-0.5">~{cumulative} min from departure</p>}
+                            </div>
+                            {eta && <p className="text-sm font-semibold text-brandAccent shrink-0">{eta}</p>}
+                        </div>
+                    );
+                })}
+            </div>
+        </div>
+    );
+}
+
+// Recurring Shuttle tab - what a driver on a fixed-interval loop (window.DRIVER_APP_DATA.shuttlePlans,
+// resolved by matching their own vehicleId against a plan's `vehicles`, same as the admin panel's own
+// shuttle/vehicle model) sees instead of a one-off dispatched trip. The loop itself is informational
+// (schedule, not live-tracked - same "no individual per-trip assignment record" reasoning documented
+// on the admin/stakeholder apps' own shuttlePlans data), but "Start Next Loop" hands off to the exact
+// same trip machinery every one-off assignment already uses (geofencing, SOS, fuel, Mark Complete) by
+// creating one real, temporary assignment for this one run - not a parallel, half-featured UI.
+function ShuttleScreen({ plan, activeLoopTrip, hasActiveTrip, onStartLoop, onSelect }) {
+    if (!plan) {
+        return (
+            <div className="p-8 text-center text-slate-400">
+                <div className="w-14 h-14 rounded-2xl bg-slate-100 text-slate-400 flex items-center justify-center mx-auto mb-3">
+                    <Icon name="truck" size={26} />
+                </div>
+                <p className="font-medium text-slate-500">No recurring shuttle loop</p>
+                <p className="text-sm mt-1">Your vehicle isn't currently rostered on a fixed shuttle route - see My Trips for your one-off dispatches.</p>
+            </div>
+        );
+    }
+
+    const next = nextShuttleDeparture(plan);
+    const stops = [...plan.origins, plan.destination];
+    const totalEst = tripEstimate(`${plan.origins[0]} -> ${plan.destination}`);
+
+    return (
+        <div className="p-4 space-y-4 animate-in">
+            <div className="bg-white rounded-3xl border border-slate-200 shadow-card overflow-hidden">
+                <div className="bg-gradient-to-br from-brandBlue to-slate-800 text-white p-5">
+                    <div className="flex items-center justify-between">
+                        <span className="w-11 h-11 rounded-xl bg-white/15 flex items-center justify-center shrink-0">
+                            <Icon name="truck" size={20} />
+                        </span>
+                        <Badge status={plan.status} />
+                    </div>
+                    <p className="text-xs font-semibold text-white/60 uppercase tracking-wide mt-3">Recurring Shuttle</p>
+                    <p className="text-base font-bold mt-0.5">{plan.origins[0]} &rarr; {plan.destination}</p>
+                    {plan.vehicles?.length > 0 && (
+                        <p className="text-xs text-white/70 mt-1">{plan.vehicles.length} vehicle{plan.vehicles.length === 1 ? '' : 's'} on this loop{totalEst ? ` · ~${totalEst.durationMin} min end to end` : ''}</p>
+                    )}
+                </div>
+
+                <div className="p-5 space-y-4">
+                    {next ? (
+                        <div className="bg-blue-50 border border-blue-100 rounded-2xl px-4 py-3 flex items-center justify-between">
+                            <p className="flex items-center gap-1.5 text-[11px] font-semibold text-brandAccent uppercase tracking-wide">
+                                <Icon name="clock" size={12} />Next Departure
+                            </p>
+                            <p className="text-xl font-bold text-brandAccent">{next.time} <span className="text-xs font-medium text-slate-400">(~{next.inMin} min)</span></p>
+                        </div>
+                    ) : (
+                        <div className="bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-center">
+                            <p className="text-sm font-medium text-slate-500">Service has ended for today</p>
+                            <p className="text-xs text-slate-400 mt-0.5">Resumes tomorrow at {plan.startTime}</p>
+                        </div>
+                    )}
+
+                    <div className="grid grid-cols-2 gap-4 text-sm">
+                        <div>
+                            <p className="text-[10px] text-slate-400 uppercase tracking-wide">Frequency</p>
+                            <p className="font-medium text-slate-800 mt-0.5">Every {plan.frequencyMinutes} min</p>
+                        </div>
+                        <div>
+                            <p className="text-[10px] text-slate-400 uppercase tracking-wide">Operating Hours</p>
+                            <p className="font-medium text-slate-800 mt-0.5">{plan.startTime} - {plan.endTime}</p>
+                        </div>
+                    </div>
+
+                    <div className="pt-1">
+                        <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-2">Route &amp; Stops</p>
+                        <ShuttlePlanStopPreview stops={stops} baseTime={next ? next.time : plan.startTime} />
+                    </div>
+                </div>
+            </div>
+
+            {activeLoopTrip ? (
+                <button onClick={() => onSelect(activeLoopTrip.id)}
+                    className="w-full py-3.5 rounded-xl bg-brandBlue text-white text-sm font-bold hover:bg-slate-800 active:scale-[0.99] transition flex items-center justify-center gap-2 shadow-sm">
+                    <Icon name="truck" size={16} />
+                    {activeLoopTrip.status === 'Scheduled' ? 'Go to This Loop - Start Trip' : 'Go to Current Loop'}
+                </button>
+            ) : hasActiveTrip ? (
+                <div className="w-full py-3.5 rounded-xl bg-slate-100 text-slate-400 text-sm font-semibold flex items-center justify-center gap-2">
+                    <Icon name="lock" size={15} />Finish your current trip first
+                </div>
+            ) : (
+                <button onClick={() => onStartLoop(plan)}
+                    className="w-full py-3.5 rounded-xl bg-brandBlue text-white text-sm font-bold hover:bg-slate-800 active:scale-[0.99] transition flex items-center justify-center gap-2 shadow-sm">
+                    <Icon name="play" size={16} />Start Next Loop
+                </button>
             )}
         </div>
     );
@@ -1410,6 +2159,71 @@ function SosModal({ open, onClose, onSubmit }) {
     );
 }
 
+// An incoming On-Call ride offer - "push notification" for real means an in-app alert like this one
+// the moment this app is open and polling (App's own nudge-poll effect), plus a best-effort
+// window.Notification() call when the tab is backgrounded and permission was already granted (see
+// that effect's own comment) - there's no real push service behind either of these, no server to
+// send one from. The countdown re-derives from `nudge.expiresAt` on every render rather than keeping
+// its own ticking state, riding the same forceProgressTick re-render pulse every other live number in
+// this app already does. Declining (or just letting it run out - the poll effect drops it the moment
+// it's no longer Pending-and-unexpired) both simply close this; only Accept creates a real trip.
+function OnCallNudgeModal({ nudge, onAccept, onDecline }) {
+    if (!nudge) return null;
+    const secondsLeft = Math.max(0, Math.ceil((nudge.expiresAt - Date.now()) / 1000));
+    return (
+        <ModalPortal>
+            <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/40">
+                <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm max-h-[85vh] overflow-y-auto p-5 sos-pulse">
+                    <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-2 text-brandAccent">
+                            <Icon name="truck" size={22} /><h3 className="font-bold text-lg text-slate-800">New On-Call Ride</h3>
+                        </div>
+                        <div className="w-10 h-10 rounded-full border-2 border-brandAccent flex items-center justify-center text-sm font-bold text-brandAccent shrink-0">
+                            {secondsLeft}
+                        </div>
+                    </div>
+                    <p className="text-xs text-slate-400 mb-3">
+                        {nudge.initiatedBy === 'admin' ? 'Assigned directly by fleet control' : 'Requested via the Stakeholder App'} - respond before this offer expires.
+                    </p>
+                    <div className="bg-slate-50 rounded-xl p-3 mb-4">
+                        <RoutePath route={nudge.route} />
+                        <p className="text-xs text-slate-500 mt-3 pt-3 border-t border-slate-200">{nudge.passengers} passenger{nudge.passengers === 1 ? '' : 's'}</p>
+                    </div>
+                    {(nudge.matchStakeholderType || nudge.matchDistanceKm != null) && (
+                        <div className="bg-violet-50 border border-violet-100 rounded-xl p-3 mb-4">
+                            <p className="text-[11px] font-semibold text-violet-700 uppercase tracking-wide mb-1.5">Why you were nudged</p>
+                            <ul className="space-y-1">
+                                {nudge.matchStakeholderType && (
+                                    <li className="flex items-start gap-1.5 text-xs text-violet-800">
+                                        <Icon name="check" size={12} className="mt-0.5 shrink-0" />
+                                        Your vehicle type matches what {nudge.matchStakeholderType} are eligible to ride in
+                                    </li>
+                                )}
+                                {nudge.matchDistanceKm != null && (
+                                    <li className="flex items-start gap-1.5 text-xs text-violet-800">
+                                        <Icon name="check" size={12} className="mt-0.5 shrink-0" />
+                                        You're {nudge.matchDistanceKm} km from the pickup point - within range
+                                    </li>
+                                )}
+                            </ul>
+                        </div>
+                    )}
+                    <div className="flex gap-2">
+                        <button onClick={() => onAccept(nudge)}
+                            className="flex-1 py-2.5 rounded-lg bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 transition">
+                            Accept
+                        </button>
+                        <button onClick={() => onDecline(nudge)}
+                            className="flex-1 py-2.5 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 transition">
+                            Decline
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </ModalPortal>
+    );
+}
+
 // Distinct from a *trip* reassignment (RoutePath/ReassignedTripCard etc.) - this is the admin swapping
 // which physical vehicle this driver is driving, going forward, across all their trips. It's a
 // heads-up notification rather than something blocking a specific trip, so it's a one-time modal the
@@ -1459,9 +2273,19 @@ function VehicleReassignedModal({ reassignment, onAcknowledge }) {
 // or error (couldn't get a fix at all - permission denied, unsupported, timed out). Nothing renders
 // when there's no attempt in flight - the modal only ever appears for the few seconds a check is
 // actually happening, or when it's actually failed, never as a persistent status display.
+// One label per geofence action - 'start' and 'complete' are a one-off trip's; 'arrive' and
+// 'completeLoop' are a shuttle leg's (see App's attemptStartShuttleLeg/attemptAdvanceShuttleLeg).
+const GEOFENCE_ACTION_LABELS = {
+    start: { verb: 'start this trip', short: 'Start' },
+    complete: { verb: 'mark this trip complete', short: 'Complete' },
+    arrive: { verb: 'confirm you\'ve reached this stop', short: 'Confirm Arrival' },
+    completeLoop: { verb: 'complete this shuttle loop', short: 'Complete' },
+};
+
 function GeofenceModal({ check, onRetry, onCancel }) {
     if (!check) return null;
-    const actionLabel = check.action === 'start' ? 'start this trip' : 'mark this trip complete';
+    const actionLabel = (GEOFENCE_ACTION_LABELS[check.action] || GEOFENCE_ACTION_LABELS.complete).verb;
+    const actionShort = (GEOFENCE_ACTION_LABELS[check.action] || GEOFENCE_ACTION_LABELS.complete).short;
     const radiusM = Math.round(GEOFENCE_RADIUS_KM * 1000);
     return (
         <ModalPortal>
@@ -1478,7 +2302,7 @@ function GeofenceModal({ check, onRetry, onCancel }) {
                     {check.status === 'blocked' && (
                         <>
                             <div className="flex items-center gap-2 text-amber-600 mb-2">
-                                <Icon name="lock" size={20} /><h3 className="font-bold text-lg text-slate-800">Too Far to {check.action === 'start' ? 'Start' : 'Complete'}</h3>
+                                <Icon name="lock" size={20} /><h3 className="font-bold text-lg text-slate-800">Too Far to {actionShort}</h3>
                             </div>
                             <p className="text-sm text-slate-500 mb-4">
                                 Geo-fencing is on for this account - you need to be within {radiusM}m of <strong className="text-slate-700">{check.locationName}</strong> to {actionLabel}.
@@ -1605,6 +2429,159 @@ function App() {
         return () => { window.removeEventListener('online', goOnline); window.removeEventListener('offline', goOffline); };
     }, []);
 
+    // Ambient location reporting (see reportMyLocation's own comment) - not tied to any specific trip
+    // action, just "let the admin side know roughly where this driver actually is" on a loop while
+    // logged in. Fires once right after login, then every LOCATION_REPORT_INTERVAL_MS, so the
+    // admin's proximity check has a reasonably fresh signal without the driver having to do anything.
+    useEffect(() => {
+        if (!loggedIn) return;
+        reportMyLocation(loggedIn.id);
+        const interval = setInterval(() => reportMyLocation(loggedIn.id), LOCATION_REPORT_INTERVAL_MS);
+        return () => clearInterval(interval);
+    }, [loggedIn?.id]);
+
+    // Broadcasts how busy this driver is right now (reportMyAvailability's own comment) - re-derived
+    // from `assignments` directly rather than the myTrips/hasActiveTrip consts below, since those
+    // aren't computed yet at this point in the component (they're declared after the early
+    // "not logged in" return, which every hook here has to come before - Rules of Hooks). Re-runs
+    // whenever `assignments` actually changes (a trip starting/completing), not just on the interval,
+    // so an on-call orchestration watching this doesn't have to wait up to 30s to see a driver go
+    // busy or free.
+    useEffect(() => {
+        if (!loggedIn) return;
+        // dropLocation reads a shuttle trip's NEXT stop (stops[legIndex + 1] - the only stop that's
+        // actually still ahead of them) rather than a fixed final destination, since a shuttle loop has
+        // no single "final" drop-off the way a one-off dispatched trip's own flat `route` string does.
+        const computeAvailability = () => {
+            const mine = assignments.filter(a => a.driver === loggedIn.name && !(a.reassigned && a.acknowledged));
+            const active = mine.find(t => !t.reassigned && (t.status === 'In Transit' || t.status === 'Delayed'));
+            if (!active || !active.startedAt || !active.estimatedDurationMin) return { busyUntil: null, dropLocation: null };
+            const dropLocation = active.kind === 'shuttle'
+                ? (active.stops && active.legIndex != null ? active.stops[active.legIndex + 1] || null : null)
+                : (active.route || '').split(' -> ')[1]?.trim() || null;
+            return { busyUntil: active.startedAt + active.estimatedDurationMin * 60000, dropLocation };
+        };
+        const report = () => { const a = computeAvailability(); reportMyAvailability(loggedIn.id, loggedIn.name, a.busyUntil, a.dropLocation); };
+        report();
+        const interval = setInterval(report, 30000);
+        return () => clearInterval(interval);
+    }, [loggedIn?.id, assignments]);
+
+    // The incoming On-Call nudge currently shown, if any - only ever one at a time, same as the rest
+    // of this flow (a driver is only ever offered one ride at once). Polled rather than event-driven
+    // only, since the entry this app is waiting on can also expire purely with the passage of time,
+    // not just a 'storage' write - the interval below is what notices that.
+    const [incomingNudge, setIncomingNudge] = useState(null);
+    useEffect(() => {
+        if (!loggedIn) return;
+        const poll = () => {
+            let all = [];
+            try { all = JSON.parse(localStorage.getItem(ONCALL_NUDGE_STORAGE_KEY) || '[]'); } catch (e) { all = []; }
+            const mine = all.find(n => n.driverId === loggedIn.id && n.status === 'Pending' && n.expiresAt > Date.now());
+            setIncomingNudge(mine || null);
+            // Best-effort real push attempt (per this feature's own plan doc) - only fires when the
+            // tab is actually backgrounded and permission was already granted earlier; this app never
+            // itself prompts for permission, since asking cold for a feature the driver hasn't seen
+            // yet would be a bad first impression. Wrapped in try/catch since the Notification API
+            // isn't available on every browser/context this could be opened in.
+            if (mine && document.hidden && window.Notification && Notification.permission === 'granted') {
+                try { new Notification('New On-Call Ride Request', { body: `${mine.origin} -> ${mine.destination}` }); } catch (e) { /* best-effort only */ }
+            }
+        };
+        poll();
+        const interval = setInterval(poll, 3000);
+        const onStorage = (e) => { if (e.key === ONCALL_NUDGE_STORAGE_KEY) poll(); };
+        window.addEventListener('storage', onStorage);
+        return () => { clearInterval(interval); window.removeEventListener('storage', onStorage); };
+    }, [loggedIn?.id]);
+
+    // Accept/Decline both flip the SAME bridge entry's own status (never create a new one) - whichever
+    // side (Stakeholder App's own orchestration, or App's own settleAdminNudges for a manual
+    // assignment) is watching it picks the change up on its own next read. Accept also creates a real
+    // trip here, same as any other kind - Scheduled, startable through the usual geofenced Start Trip
+    // flow, tracked exactly like a dispatched or shuttle trip from this point on; nothing here forces
+    // it straight into In Transit.
+    const respondToNudge = (nudge, outcome) => {
+        let all = [];
+        try { all = JSON.parse(localStorage.getItem(ONCALL_NUDGE_STORAGE_KEY) || '[]'); } catch (e) { all = []; }
+        try {
+            localStorage.setItem(ONCALL_NUDGE_STORAGE_KEY, JSON.stringify(
+                all.map(n => n.id === nudge.id ? { ...n, status: outcome, respondedAt: Date.now() } : n)
+            ));
+        } catch (e) { /* storage unavailable - the Stakeholder/admin side will just see this time out instead */ }
+        setIncomingNudge(null);
+        if (outcome === 'Accepted') {
+            setAssignments(list => [...list, {
+                id: nudge.id, vehicleId: nudge.vehicleId, type: nudge.vehicleType, driver: loggedIn.name,
+                vendorName: nudge.vendorName, route: nudge.route, time: formatClockTime(new Date()),
+                status: 'Scheduled', progress: 0, stakeholder: 'On-Call Ride', phase: 'upcoming', sos: false,
+                kind: 'oncall',
+            }]);
+        }
+    };
+
+    // Demo-only (TopBar's own phone-icon button) - manufactures a real nudge on the same bridge
+    // window.ONCALL_NUDGE_STORAGE_KEY a genuine Stakeholder App on-call request would write, addressed
+    // to this driver, so the "matched automatically, before an admin ever manually intervenes"
+    // experience can be shown on the driver side alone. Refuses to stack a second one on top of an
+    // already-showing nudge (real or simulated) - same one-at-a-time rule the real flow follows.
+    const simulateIncomingOnCallNudge = () => {
+        if (!loggedIn || incomingNudge) return;
+        const windowSec = 40; // matches Module Settings' own oncallNudgeWindowSec default
+        const nudge = {
+            id: uid('NDG'), requestId: uid('OC'), driverId: loggedIn.id, driverName: loggedIn.name,
+            vehicleId: loggedIn.vehicleId, vehicleType: currentVehicleType || 'Minibus (20)', vendorName: loggedIn.vendor,
+            origin: 'Athletes Village - Block A', destination: 'Jawaharlal Nehru Stadium', route: 'Athletes Village - Block A -> Jawaharlal Nehru Stadium',
+            passengers: 2, sentAt: Date.now(), expiresAt: Date.now() + windowSec * 1000, status: 'Pending', initiatedBy: 'stakeholder',
+            matchStakeholderType: 'Athletes', matchDistanceKm: 3.2,
+        };
+        let all = [];
+        try { all = JSON.parse(localStorage.getItem(ONCALL_NUDGE_STORAGE_KEY) || '[]'); } catch (e) { all = []; }
+        try { localStorage.setItem(ONCALL_NUDGE_STORAGE_KEY, JSON.stringify([nudge, ...all].slice(0, 100))); } catch (e) { /* storage unavailable - still shows locally below */ }
+        setIncomingNudge(nudge);
+    };
+
+    // Picks up any Route Plan the admin panel has Published for this driver (matched by name, same as
+    // every other trip-ownership check in this file) - see ROUTE_PLAN_PUBLISH_STORAGE_KEY's own
+    // comment for the bridge itself. Merges each one straight into `assignments` as a real Scheduled
+    // trip the first time it's seen, then this app tracks it exactly like anything else locally from
+    // there - re-publishing (e.g. after a vehicle reassignment) only overwrites a copy that's still
+    // Scheduled here, never one already started or completed, so a live trip's own progress is never
+    // clobbered by a stale re-read of the bridge.
+    const mergePublishedPlans = (driverName) => {
+        let published = [];
+        try { published = JSON.parse(localStorage.getItem(ROUTE_PLAN_PUBLISH_STORAGE_KEY) || '[]'); } catch (e) { published = []; }
+        const mine = published.filter(r => r.driverName === driverName);
+        if (mine.length === 0) return;
+        setAssignments(list => {
+            let changed = false;
+            let next = list;
+            mine.forEach(r => {
+                const idx = next.findIndex(a => a.id === r.id);
+                const shaped = {
+                    id: r.id, vehicleId: r.vehicleId, type: r.vehicleType, driver: r.driverName, vendorName: r.vendorName,
+                    route: r.route, time: r.time || '', status: 'Scheduled', progress: 0, stakeholder: r.stakeholder,
+                    phase: 'upcoming', sos: false, publishedAt: r.publishedAt,
+                };
+                if (idx === -1) {
+                    next = [shaped, ...next];
+                    changed = true;
+                } else if (next[idx].status === 'Scheduled' && next[idx].publishedAt !== r.publishedAt) {
+                    next = next.map((a, i) => i === idx ? { ...a, ...shaped } : a);
+                    changed = true;
+                }
+            });
+            return changed ? next : list;
+        });
+    };
+    useEffect(() => {
+        if (!loggedIn) return;
+        mergePublishedPlans(loggedIn.name);
+        const onStorage = (e) => { if (e.key === ROUTE_PLAN_PUBLISH_STORAGE_KEY) mergePublishedPlans(loggedIn.name); };
+        window.addEventListener('storage', onStorage);
+        return () => window.removeEventListener('storage', onStorage);
+    }, [loggedIn?.name]);
+
     // Flushes any SOS reports queued while offline (see submitSos below) the moment connectivity
     // comes back - fix-list item 78. localStorage stands in for a real durable queue/background sync
     // since there's no service worker or backend here.
@@ -1666,7 +2643,43 @@ function App() {
     // both resolve the exact same model name for the same vehicle.
     const currentVehicleType = (myTrips.find(t => t.vehicleId === loggedIn.vehicleId) || myTrips[0])?.type || null;
 
+    // The recurring shuttle loop this driver's own vehicle is rostered on, if any - matched the same
+    // way the admin panel matches a vehicle to a shuttle plan (plan.vehicles includes the vehicle id).
+    const myShuttlePlan = DRIVER_APP_DATA.shuttlePlans.find(s => s.status === 'Active' && s.vehicles.includes(loggedIn.vehicleId)) || null;
+    // Whichever shuttle-loop trip (if any) is currently Scheduled/In Transit/Delayed for this driver -
+    // "Start Next Loop" only ever creates one at a time, so there's at most one to find.
+    const activeLoopTrip = myTrips.find(t => t.kind === 'shuttle' && t.status !== 'Completed') || null;
+
     const updateTrip = (id, patch) => setAssignments(list => list.map(a => a.id === id ? { ...a, ...patch } : a));
+
+    // Hands one real run of the recurring loop into the exact same trip machinery every one-off
+    // dispatch already uses (geofencing, SOS, fuel, Complete) instead of a parallel, half-featured
+    // "shuttle mode" - a genuine, temporary assignment for this driver/vehicle, tagged `kind: 'shuttle'`
+    // purely so My Trips/Home/this screen can tell it apart from a real dispatch at a glance. Carries
+    // the FULL ordered stop chain (`stops`) rather than collapsing to first-pickup -> destination -
+    // that was the exact gap this redesign fixes. `route`/`startedAt`/`estimatedDurationMin` are kept
+    // as an approximate first-stop -> last-stop fallback purely for the handful of generic, kind-
+    // agnostic readers (e.g. the fuel-gauge km-driven estimate) that only ever know one flat leg -
+    // every shuttle-aware screen uses the precise per-leg helpers (shuttleLegProgress/shuttleStopEta)
+    // instead, never this fallback.
+    const startShuttleLoop = (plan) => {
+        if (hasActiveTrip) return;
+        const id = uid('SHTTRIP');
+        const stops = [...plan.origins, plan.destination];
+        const totalDurationMin = stops.slice(0, -1).reduce((sum, _, i) => {
+            const est = tripEstimate(`${stops[i]} -> ${stops[i + 1]}`);
+            return sum + (est ? est.durationMin : 0);
+        }, 0);
+        const newTrip = {
+            id, vehicleId: loggedIn.vehicleId, type: currentVehicleType || 'Minibus (20)', driver: loggedIn.name,
+            vendorName: loggedIn.vendor, kind: 'shuttle', shuttlePlanId: plan.id, frequencyMinutes: plan.frequencyMinutes,
+            stops, route: `${stops[0]} -> ${stops[stops.length - 1]}`, legIndex: null, legStartedAt: null,
+            time: formatClockTime(new Date()), status: 'Scheduled', startedAt: null, estimatedDurationMin: totalDurationMin || null, progress: 0,
+            stakeholder: 'Recurring Shuttle Loop', phase: 'upcoming', sos: false,
+        };
+        setAssignments(list => [newTrip, ...list]);
+        setSelectedTripId(id);
+    };
 
     const startTrip = (id) => {
         if (hasActiveTrip) return;
@@ -1681,16 +2694,48 @@ function App() {
     // derivedProgress caps at 99 on its own, a trip never silently finishes itself.
     const completeTrip = (id) => updateTrip(id, { status: 'Completed', progress: 100 });
 
-    // Runs one geo-fencing check for `trip` and either performs the action immediately (distance is
-    // within GEOFENCE_RADIUS_KM of the relevant point) or leaves `geofenceCheck` set to whatever went
-    // wrong, for GeofenceModal to show. `onSuccess` only fires once the action has actually gone
-    // through - callers use it for follow-up UI that should never happen for a blocked/failed attempt
-    // (e.g. auto-expanding the route map after a trip that actually started).
-    const runGeofenceCheck = async (trip, action, onSuccess) => {
-        const [originName, destName] = trip.route.split(' -> ');
-        const targetName = action === 'start' ? originName : destName;
+    // The moment a shuttle loop actually begins - leg 0 (stops[0] -> stops[1]) starts running, same
+    // "startedAt is the one true clock" idea startTrip already follows for a one-off trip.
+    const startShuttleLeg = (id) => {
+        if (hasActiveTrip) return;
+        updateTrip(id, { status: 'In Transit', legIndex: 0, legStartedAt: Date.now(), startedAt: Date.now() });
+    };
+    // Either moves the loop on to its next leg (mid-route), or, when the stop just reached IS the
+    // final one, finishes the whole loop - same one-mutator-does-both shape completeTrip has, just
+    // resolved against this trip's own current legIndex instead of always meaning "the very end".
+    // Also bridges the leg that just closed out to the admin app (reportCompletedShuttleLeg) - this
+    // is the only moment a shuttle leg is ever known to be done, anywhere in this whole system, so
+    // it's the only place that can report it.
+    const advanceShuttleLeg = (id) => {
+        const trip = assignments.find(a => a.id === id);
+        if (!trip || trip.legIndex == null) return;
+        const atFinalLeg = trip.legIndex === trip.stops.length - 2;
+        const legOrigin = trip.stops[trip.legIndex], legDest = trip.stops[trip.legIndex + 1];
+        reportCompletedShuttleLeg({
+            id: uid('SHTLEG'), vehicleId: trip.vehicleId, vehicleType: trip.type, driverName: trip.driver, vendorName: trip.vendorName,
+            route: `${legOrigin} -> ${legDest}`, routeFrom: LOCATION_COORDS[legOrigin], routeTo: LOCATION_COORDS[legDest],
+            completedAt: Date.now(), shuttlePlanId: trip.shuttlePlanId,
+        });
+        setAssignments(list => list.map(a => {
+            if (a.id !== id) return a;
+            return atFinalLeg
+                ? { ...a, status: 'Completed', progress: 100 }
+                : { ...a, legIndex: a.legIndex + 1, legStartedAt: Date.now() };
+        }));
+    };
+
+    // Runs one geo-fencing check against `targetName` and either performs it immediately (distance is
+    // within GEOFENCE_RADIUS_KM) or leaves `geofenceCheck` set to whatever went wrong, for
+    // GeofenceModal to show. `perform` is the actual state change to apply on success (start a one-off
+    // trip, complete one, start a shuttle leg, advance/complete one) - generalized to accept any of
+    // them, rather than the two hardcoded "start vs complete a single-leg trip" branches this used to
+    // have, specifically so a shuttle loop's own multi-step actions could reuse the exact same check
+    // instead of a parallel geofencing implementation. `onSuccess` only fires once the action has
+    // actually gone through - callers use it for follow-up UI that should never happen for a blocked/
+    // failed attempt (e.g. auto-expanding the route map after a trip that actually started).
+    const runGeofenceCheck = async (trip, action, targetName, perform, onSuccess) => {
         const targetCoords = LOCATION_COORDS[targetName];
-        setGeofenceCheck({ trip, action, onSuccess, status: 'checking', locationName: targetName });
+        setGeofenceCheck({ trip, action, targetName, perform, onSuccess, status: 'checking', locationName: targetName });
         try {
             // Demo mode reports the driver as exactly at the target point instead of asking the
             // device for its real GPS fix - same brief delay a real fix would take, so "Checking your
@@ -1701,13 +2746,13 @@ function App() {
             const distanceKm = targetCoords ? haversineKm(myCoords, targetCoords) : 0;
             if (distanceKm <= GEOFENCE_RADIUS_KM) {
                 setGeofenceCheck(null);
-                if (action === 'start') startTrip(trip.id); else completeTrip(trip.id);
+                perform();
                 onSuccess && onSuccess();
             } else {
-                setGeofenceCheck({ trip, action, onSuccess, status: 'blocked', locationName: targetName, distanceKm });
+                setGeofenceCheck({ trip, action, targetName, perform, onSuccess, status: 'blocked', locationName: targetName, distanceKm });
             }
         } catch (err) {
-            setGeofenceCheck({ trip, action, onSuccess, status: 'error', locationName: targetName, message: err.message });
+            setGeofenceCheck({ trip, action, targetName, perform, onSuccess, status: 'error', locationName: targetName, message: err.message });
         }
     };
 
@@ -1716,16 +2761,35 @@ function App() {
     // admin panel's toggle), so turning it off genuinely removes the location requirement rather than
     // just hiding the modal on an already-passing check.
     const attemptStartTrip = (trip, onSuccess) => {
-        if (!geoFencingEnabled) { startTrip(trip.id); onSuccess && onSuccess(); return; }
-        runGeofenceCheck(trip, 'start', onSuccess);
+        const [originName] = trip.route.split(' -> ');
+        const perform = () => startTrip(trip.id);
+        if (!geoFencingEnabled) { perform(); onSuccess && onSuccess(); return; }
+        runGeofenceCheck(trip, 'start', originName, perform, onSuccess);
     };
     const attemptCompleteTrip = (trip, onSuccess) => {
-        if (!geoFencingEnabled) { completeTrip(trip.id); onSuccess && onSuccess(); return; }
-        runGeofenceCheck(trip, 'complete', onSuccess);
+        const [, destName] = trip.route.split(' -> ');
+        const perform = () => completeTrip(trip.id);
+        if (!geoFencingEnabled) { perform(); onSuccess && onSuccess(); return; }
+        runGeofenceCheck(trip, 'complete', destName, perform, onSuccess);
+    };
+    // Same gate, shuttle-flavored: "start" always checks against stops[0]; "arrive/complete" checks
+    // against whichever stop is actually next, which is either an intermediate one (advance the leg)
+    // or the final one (finish the whole loop) - GeofenceModal tells the two apart via `action`.
+    const attemptStartShuttleLeg = (trip) => {
+        const perform = () => startShuttleLeg(trip.id);
+        if (!geoFencingEnabled) { perform(); return; }
+        runGeofenceCheck(trip, 'start', trip.stops[0], perform);
+    };
+    const attemptAdvanceShuttleLeg = (trip) => {
+        const nextStopIndex = trip.legIndex + 1;
+        const isFinal = nextStopIndex === trip.stops.length - 1;
+        const perform = () => advanceShuttleLeg(trip.id);
+        if (!geoFencingEnabled) { perform(); return; }
+        runGeofenceCheck(trip, isFinal ? 'completeLoop' : 'arrive', trip.stops[nextStopIndex], perform);
     };
     const retryGeofenceCheck = () => {
         if (!geofenceCheck) return;
-        runGeofenceCheck(geofenceCheck.trip, geofenceCheck.action, geofenceCheck.onSuccess);
+        runGeofenceCheck(geofenceCheck.trip, geofenceCheck.action, geofenceCheck.targetName, geofenceCheck.perform, geofenceCheck.onSuccess);
     };
     const cancelGeofenceCheck = () => setGeofenceCheck(null);
 
@@ -1830,7 +2894,14 @@ function App() {
     const logout = () => { setLoggedIn(null); setActiveTab('home'); setSelectedTripId(null); setVehicleReassignment(null); setGeofenceCheck(null); };
 
     let screen, title;
-    if (selectedTrip) {
+    if (selectedTrip && selectedTrip.kind === 'shuttle') {
+        title = 'Recurring Shuttle';
+        screen = (
+            <ShuttleTripScreen trip={selectedTrip} hasActiveTrip={hasActiveTrip} onStart={() => attemptStartShuttleLeg(selectedTrip)} onAdvance={() => attemptAdvanceShuttleLeg(selectedTrip)}
+                onOpenSos={() => openSos(selectedTrip.id)} onResolveSos={() => resolveSos(selectedTrip.id)}
+                fuelProfile={vehicleFuelProfile(selectedTrip, assignments, fuelState)} onLogRefuel={() => logRefuel(selectedTrip.vehicleId)} />
+        );
+    } else if (selectedTrip) {
         title = selectedTrip.reassigned ? 'Trip Reassigned' : 'Trip Details';
         screen = (
             <TripDetailScreen trip={selectedTrip} hasActiveTrip={hasActiveTrip} onStart={() => attemptStartTrip(selectedTrip)} onComplete={() => attemptCompleteTrip(selectedTrip)}
@@ -1843,11 +2914,16 @@ function App() {
     } else if (activeTab === 'trips') {
         title = 'My Trips';
         screen = <MyTripsScreen trips={myTrips} onSelect={setSelectedTripId} onStartTrip={attemptStartTrip} hasActiveTrip={hasActiveTrip} onAcknowledge={acknowledgeReassignment} />;
+    } else if (activeTab === 'shuttle') {
+        title = 'Recurring Shuttle';
+        screen = <ShuttleScreen plan={myShuttlePlan} activeLoopTrip={activeLoopTrip} hasActiveTrip={hasActiveTrip} onStartLoop={startShuttleLoop} onSelect={setSelectedTripId} />;
     } else {
         title = 'Home';
         screen = <HomeScreen trips={myTrips} assignments={assignments} fuelState={fuelState} driver={loggedIn} vehicleType={currentVehicleType}
+            shuttlePlan={myShuttlePlan} activeLoopTrip={activeLoopTrip} hasActiveTrip={hasActiveTrip}
             onAcknowledge={acknowledgeReassignment} onComplete={attemptCompleteTrip} onOpenSos={openSos} onResolveSos={resolveSos}
-            onLogRefuel={logRefuel} onGoToTrips={() => setActiveTab('trips')} />;
+            onAdvanceShuttleLeg={attemptAdvanceShuttleLeg}
+            onLogRefuel={logRefuel} onGoToTrips={() => setActiveTab('trips')} onGoToShuttle={() => setActiveTab('shuttle')} />;
     }
 
     return (
@@ -1862,12 +2938,14 @@ function App() {
                 <TopBar driver={loggedIn} title={title} onBack={selectedTrip ? () => setSelectedTripId(null) : null} onLogout={logout}
                     onSimulateReassignment={simulateReassignment} onSimulateVehicleReassignment={simulateVehicleReassignment}
                     simulateAtLocation={simulateAtLocation} onToggleSimulateLocation={() => setSimulateAtLocation(s => !s)}
-                    isOnline={isOnline} onToggleSimulateOffline={() => setSimulateOffline(s => !s)} />
+                    isOnline={isOnline} onToggleSimulateOffline={() => setSimulateOffline(s => !s)}
+                    onSimulateOnCallNudge={simulateIncomingOnCallNudge} />
                 <div className="flex-1 overflow-y-auto pb-2">{screen}</div>
                 {!selectedTrip && <BottomNav activeTab={activeTab} onChange={t => { setActiveTab(t); setSelectedTripId(null); }} />}
                 <SosModal open={sosModalOpen} onClose={() => setSosModalOpen(false)} onSubmit={submitSos} />
                 <VehicleReassignedModal reassignment={vehicleReassignment} onAcknowledge={acknowledgeVehicleReassignment} />
                 <GeofenceModal check={geofenceCheck} onRetry={retryGeofenceCheck} onCancel={cancelGeofenceCheck} />
+                <OnCallNudgeModal nudge={incomingNudge} onAccept={n => respondToNudge(n, 'Accepted')} onDecline={n => respondToNudge(n, 'Declined')} />
             </div>
         </div>
     );
