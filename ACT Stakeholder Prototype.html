@@ -295,6 +295,22 @@ const DRIVER_AVAILABILITY_STORAGE_KEY = 'kheloTechDriverAvailability';
 // baked into STAKEHOLDER_APP_DATA. See App's mergePublishedPlans for how it's read/merged.
 const ROUTE_PLAN_PUBLISH_STORAGE_KEY = 'kheloTechPublishedRoutePlans';
 
+// Recurring shuttles published from the admin panel (window.SHUTTLE_PUBLISH_STORAGE_KEY /
+// syncPublishedShuttlesToBridge, ACT Travel Prototype.html). That panel rewrites the whole published
+// set on every change, so for any shuttle id it contains, the bridge copy is the current truth -
+// including a pause, or a vehicle taken off the loop. Before the admin panel has ever written it
+// (null), this app falls back to its own seed rather than showing no shuttles at all.
+const SHUTTLE_PUBLISH_STORAGE_KEY = 'kheloTechPublishedShuttlePlans';
+const readPublishedShuttles = () => {
+    try { return JSON.parse(localStorage.getItem(SHUTTLE_PUBLISH_STORAGE_KEY) || 'null'); } catch (e) { return null; }
+};
+const mergeShuttlePlans = (seed, published) => {
+    if (!Array.isArray(published)) return seed;
+    const byId = new Map(seed.map(s => [s.id, s]));
+    published.forEach(p => byId.set(p.id, p));
+    return [...byId.values()];
+};
+
 // The one shared "find an Available, capacity-fitting vehicle closest to the pickup point, with
 // whichever driver is already paired to it" match - a locally-ported version of the same shape
 // ACT Travel Prototype.html's window.resolveLegs/window.idleDriverForVehicle already use for the
@@ -1439,7 +1455,15 @@ function ShuttlePlanCard({ plan }) {
 }
 
 function ShuttlesScreen() {
-    const plans = STAKEHOLDER_APP_DATA.shuttlePlans;
+    const [publishedShuttles, setPublishedShuttles] = useState(readPublishedShuttles);
+    useEffect(() => {
+        const onStorage = (e) => { if (e.key === SHUTTLE_PUBLISH_STORAGE_KEY) setPublishedShuttles(readPublishedShuttles()); };
+        window.addEventListener('storage', onStorage);
+        return () => window.removeEventListener('storage', onStorage);
+    }, []);
+    // Only loops actually running - a Paused loop, or one with no vehicle left on it (Draft), would
+    // otherwise sit here with a live "next departure" countdown for a shuttle that is not coming.
+    const plans = mergeShuttlePlans(STAKEHOLDER_APP_DATA.shuttlePlans, publishedShuttles).filter(s => s.status === 'Active');
     if (plans.length === 0) {
         return (
             <div className="p-4">

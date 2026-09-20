@@ -174,6 +174,21 @@ const SOS_QUEUE_STORAGE_KEY = 'kheloTechQueuedSos';
 // admin has explicitly Published it (not merely assigned a vehicle - see that function's own
 // comment), matched to this driver by name. See App's mergePublishedPlans for how it's read/merged.
 const ROUTE_PLAN_PUBLISH_STORAGE_KEY = 'kheloTechPublishedRoutePlans';
+
+// Recurring shuttles published from the admin panel (window.SHUTTLE_PUBLISH_STORAGE_KEY /
+// syncPublishedShuttlesToBridge, ACT Travel Prototype.html), same contract the Stakeholder App's own
+// copy of these helpers follows: for any shuttle id on the bridge, the bridge copy is the current
+// truth; before the admin panel has ever written it, this app falls back to its own seed.
+const SHUTTLE_PUBLISH_STORAGE_KEY = 'kheloTechPublishedShuttlePlans';
+const readPublishedShuttles = () => {
+    try { return JSON.parse(localStorage.getItem(SHUTTLE_PUBLISH_STORAGE_KEY) || 'null'); } catch (e) { return null; }
+};
+const mergeShuttlePlans = (seed, published) => {
+    if (!Array.isArray(published)) return seed;
+    const byId = new Map(seed.map(s => [s.id, s]));
+    published.forEach(p => byId.set(p.id, p));
+    return [...byId.values()];
+};
 // The reverse direction, this app -> admin - must match the exact key window.SHUTTLE_LEG_STORAGE_KEY
 // in ACT Travel Prototype.html reads. A recurring shuttle loop has no per-trip record anywhere until
 // a driver actually finishes a leg (there's no dispatcher/Route-Plan step to bill against the way a
@@ -2624,6 +2639,15 @@ function App() {
         return () => clearInterval(id);
     }, []);
 
+    // Shuttle loops published from the admin panel (see readPublishedShuttles). Kept here, before the
+    // login early return below, because the Rules of Hooks need every hook ahead of it.
+    const [publishedShuttles, setPublishedShuttles] = useState(readPublishedShuttles);
+    useEffect(() => {
+        const onStorage = (e) => { if (e.key === SHUTTLE_PUBLISH_STORAGE_KEY) setPublishedShuttles(readPublishedShuttles()); };
+        window.addEventListener('storage', onStorage);
+        return () => window.removeEventListener('storage', onStorage);
+    }, []);
+
     if (!loggedIn) {
         return <LoginScreen drivers={DRIVER_APP_DATA.drivers} onLogin={setLoggedIn} />;
     }
@@ -2645,7 +2669,8 @@ function App() {
 
     // The recurring shuttle loop this driver's own vehicle is rostered on, if any - matched the same
     // way the admin panel matches a vehicle to a shuttle plan (plan.vehicles includes the vehicle id).
-    const myShuttlePlan = DRIVER_APP_DATA.shuttlePlans.find(s => s.status === 'Active' && s.vehicles.includes(loggedIn.vehicleId)) || null;
+    const myShuttlePlan = mergeShuttlePlans(DRIVER_APP_DATA.shuttlePlans, publishedShuttles)
+        .find(s => s.status === 'Active' && s.vehicles.includes(loggedIn.vehicleId)) || null;
     // Whichever shuttle-loop trip (if any) is currently Scheduled/In Transit/Delayed for this driver -
     // "Start Next Loop" only ever creates one at a time, so there's at most one to find.
     const activeLoopTrip = myTrips.find(t => t.kind === 'shuttle' && t.status !== 'Completed') || null;
