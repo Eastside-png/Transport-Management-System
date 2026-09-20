@@ -501,7 +501,10 @@ window.INITIAL_DATA = {
     // point before the venue (window.shuttleRouteStats sums the ordered chain's legs). SHT-001 below
     // is seeded with two pickup points specifically so that's visible live rather than only in code.
     shuttlePlans: [
-        { id: 'SHT-001', origins: ['Athletes Village - Block A', 'Athletes Village - Block C'], destination: 'Jawaharlal Nehru Stadium', frequencyMinutes: 30, startTime: '06:00', endTime: '22:00', vehicles: ['VH-2210', 'VH-2211'], status: 'Active' },
+        // publishedAt: set, since this loop already ships inside both the Driver and Stakeholder
+        // apps' own seed - it is, in effect, already out. A shuttle created in this panel starts with
+        // publishedAt null and reaches neither app until someone presses Publish on it.
+        { id: 'SHT-001', origins: ['Athletes Village - Block A', 'Athletes Village - Block C'], destination: 'Jawaharlal Nehru Stadium', frequencyMinutes: 30, startTime: '06:00', endTime: '22:00', vehicles: ['VH-2210', 'VH-2211'], status: 'Active', publishedAt: '2026-08-09T08:00:00.000Z' },
     ],
 
     // Individually-entered arrival/departure records from Travel Plans' "Create Travel Plan" form -
@@ -777,6 +780,31 @@ window.INITIAL_DATA = {
         { id: 'ATOM-20042', firstName: 'Suma', lastName: 'Bhat', phone: '+91 99860 65667', federation: 'Athletics', soa: 'Karnataka', stakeholderType: 'Host State Government / Sports Authority', gender: 'Female' },
         { id: 'ATOM-10871', firstName: 'Rahul', lastName: 'Verma', phone: '+91 94470 76776', federation: 'Athletics', soa: 'Kerala', stakeholderType: 'Athletes', gender: 'Male' },
         { id: 'ATOM-20043', firstName: 'Anjali', lastName: 'Pillai', phone: '+91 94470 76777', federation: 'Athletics', soa: 'Kerala', stakeholderType: 'Athletes', gender: 'Female' },
+    ],
+
+    // Route Plans' own third demand source (Logic 3 - Route Plan Suggestion Engine's own plan doc
+    // calls Logic 1/2 out by name; this is deliberately never a "Logic 3 suggestion" the way those are,
+    // it never appears as an automatic card, it only exists once an admin has actually built one) -
+    // an admin-assembled, named group of ATOM directory people who need a ride that isn't an arrival,
+    // a departure, or tied to a tournament fixture (a press briefing, a venue walkthrough, an ad hoc
+    // errand). Deliberately NOT scoped to one Federation/SOA the way a Travel Plan's Members picker is
+    // (window.TravelPlansTab) - a cross-delegation group (two officials from different Federations
+    // sharing the same errand) is exactly the case this exists for. Never raises a data.manualPlans
+    // record and never feeds data.pendingDemands - Route Plans reads this directly, its own third,
+    // equally real source alongside Pending Demand and Event Notice, not a workaround routed through
+    // either of them. Saved once named so it can be reused for a later Route Plan without re-searching -
+    // "name it" is the whole point, an anonymous one-off selection wouldn't need one.
+    adHocGroups: [
+        {
+            id: 'GRP-001', name: 'Cross-Federation Officials Briefing',
+            memberIds: ['ATOM-20004', 'ATOM-20011', 'ATOM-20007'],
+            createdAt: '2026-08-09T10:00:00.000Z', createdBy: 'Shubham Das',
+        },
+        {
+            id: 'GRP-002', name: 'Media Pool Afternoon Transfer',
+            memberIds: ['ATOM-20009', 'ATOM-20013'],
+            createdAt: '2026-08-10T14:30:00.000Z', createdBy: 'Shubham Das',
+        },
     ],
 
     // recipientRole and source (fix-list item 38) are real fields now - recipientRole is the role
@@ -1889,6 +1917,38 @@ window.publishRoutePlanToBridge = (record) => {
     try { localStorage.setItem(ROUTE_PLAN_PUBLISH_STORAGE_KEY, JSON.stringify(next)); } catch (e) { /* storage unavailable - nothing more to do */ }
 };
 
+// The other half of publishing - pulls an already-published plan back off the bridge so a cancelled
+// trip actually disappears from the driver's and the stakeholder's own app, instead of a Cancelled
+// status that only the Admin Panel can see while a driver is still being told to drive it. Cancelling
+// a plan that was never Published is a no-op here, which is why this filters rather than checking
+// first (see RoutePlansTab's cancelPlan).
+// Recurring shuttles' own publish bridge - until this existed, a shuttle created in this panel never
+// reached anyone: the Driver and Stakeholder apps each carried their own hardcoded copy of the one
+// seeded loop and read nothing else. Unlike a Route Plan (published once, then retracted or left),
+// a shuttle keeps changing after it goes out - vehicles are added and removed, it is paused and
+// resumed - so this is not an append. RoutePlansTab rewrites the WHOLE published set whenever
+// data.shuttlePlans changes, and both apps treat this list as the current truth for any shuttle id
+// it contains. An unpublished shuttle is simply never in it.
+window.SHUTTLE_PUBLISH_STORAGE_KEY = 'kheloTechPublishedShuttlePlans';
+window.syncPublishedShuttlesToBridge = (shuttlePlans) => {
+    // A Cancelled loop stays on this list, carrying its Cancelled status, rather than being dropped.
+    // Both apps also ship their own seed copy of a loop and treat the bridge as the override for any
+    // id it names, so silently removing a cancelled loop would let that seed copy resurface and the
+    // loop would come back from the dead. Sending the cancellation is what actually retires it; the
+    // apps then filter to Active and it disappears.
+    const published = shuttlePlans.filter(s => s.publishedAt).map(s => ({
+        id: s.id, origins: s.origins, destination: s.destination, frequencyMinutes: s.frequencyMinutes,
+        startTime: s.startTime, endTime: s.endTime, vehicles: s.vehicles, status: s.status, publishedAt: s.publishedAt,
+    }));
+    try { localStorage.setItem(window.SHUTTLE_PUBLISH_STORAGE_KEY, JSON.stringify(published)); } catch (e) { /* storage unavailable - nothing more to do */ }
+};
+
+window.retractRoutePlanFromBridge = (planId) => {
+    let all = [];
+    try { all = JSON.parse(localStorage.getItem(ROUTE_PLAN_PUBLISH_STORAGE_KEY) || '[]'); } catch (e) { all = []; }
+    try { localStorage.setItem(ROUTE_PLAN_PUBLISH_STORAGE_KEY, JSON.stringify(all.filter(r => r.id !== planId))); } catch (e) { /* storage unavailable - nothing more to do */ }
+};
+
 // A second admin-reads bridge, the Driver App's own equivalent of the Stakeholder App's
 // ON_CALL_STORAGE_KEY - a recurring shuttle loop's individual legs have no per-trip record anywhere
 // (see data.shuttlePlans' own seed comment), so the only place a completed one is ever actually known
@@ -2848,7 +2908,9 @@ window.DRIVER_INVENTORY_STATUSES = ['Available', 'Booked', 'Inactive', 'Pending 
 // linked Live Fleet Tracking assignment's phase once one exists (see window.routePlanStatus below) -
 // a plan's own stored `status` field only ever holds Draft/Assigned/Cancelled; Ongoing/Completed are
 // derived, never written directly, so they can't drift from the assignment they're describing.
-// Cancelled: an explicit admin action (fix-list item 89, not yet wired to a button in this pass).
+// Cancelled: an explicit admin action (fix-list item 89), and the one honest way to retire a plan
+// that already has a vehicle committed - see RoutePlansTab's cancelPlan and why Delete stays
+// Draft-only.
 // 'Published' sits between 'Assigned' (a vehicle is picked, but nothing has actually gone out yet -
 // still effectively a form) and 'Ongoing' (physically under way) - the admin's own explicit "this is
 // finalized, release it" action (RoutePlansTab's publishPlan), which is also the moment it's written
@@ -8203,6 +8265,17 @@ const planDateTimeMs = (plan) => {
     return new Date(yyyy, mm - 1, dd, hh || 0, min || 0).getTime();
 };
 
+// A Travel Plan's own DD/MM/YYYY into the YYYY-MM-DD an <input type="date"> and every Route Plan
+// record already use. Passes an already-ISO string straight through, so it is safe to call on either
+// shape without checking first.
+const toISODate = (value) => {
+    if (!value) return '';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+    const [dd, mm, yyyy] = value.split('/');
+    if (!dd || !mm || !yyyy) return '';
+    return `${yyyy}-${mm.padStart(2, '0')}-${dd.padStart(2, '0')}`;
+};
+
 // True when two plans share the same Point of Contact (matched by ATOM ID when both have one,
 // falling back to a case-insensitive name match for a POC picked as free text rather than off the
 // ATOM directory - see the "Point of Contact" field below) AND their date/times fall within
@@ -8377,11 +8450,27 @@ const SHUTTLE_PREVIEW_LIMIT = 5;
 
 window.RoutePlansTab = ({ data, setData }) => {
     const [modal, setModal] = useState(false);
-    // sourceEventNoticeId/eventStakeholder/eventHeadcount only apply to a plan created from an Upcoming
+    // sourceEventNoticeId/eventHeadcount only apply to a plan created from an Upcoming
     // Event Notice (Logic 2) - there's no demand to inherit a stakeholder/headcount from there, so the
     // modal collects them directly; both stay blank/unused on the ordinary demandRef path.
+    // adHocGroupId/date are Logic 3's own (window.adHocGroups below) - a group has no fixture and no
+    // PNR to source a date from either, so unlike the other two paths this one needs its own explicit
+    // Date field in the modal, see the form JSX's own comment.
     const [form, setForm] = useState({ demandRef: '', vehicle: 'Unassigned', origin: '', destination: '', time: '',
-        sourceEventNoticeId: null, eventStakeholder: '', eventHeadcount: '' });
+        sourceEventNoticeId: null, eventHeadcount: '', adHocGroupId: null, date: '',
+        delegationKey: '' });
+    // The Create Route Plan modal asks two independent questions, in this order, rather than one
+    // conflated "pick a reference" that silently decided both. sourceMode is WHO is travelling:
+    // 'delegation' picks a known delegation off Travel Plans, 'custom' builds the party by hand from
+    // the ATOM directory. journeyType is WHERE they are going: arrival, departure, accommodation to a
+    // venue, a venue back to accommodation, or something else entirely. Picking a delegation used to
+    // force an arrival/departure because that was the only journey the old reference carried; a
+    // delegation sitting in Athletes Village needing a ride to a stadium is just as real a plan.
+    const [sourceMode, setSourceMode] = useState('delegation');
+    const [journeyType, setJourneyType] = useState('');
+    const [groupSearch, setGroupSearch] = useState('');
+    const [groupSelectedIds, setGroupSelectedIds] = useState([]);
+    const [groupNameInput, setGroupNameInput] = useState('');
     const [selectedDemand, setSelectedDemand] = useState(null);
     const [isSyncingDemands, setIsSyncingDemands] = useState(false);
     const [editingVehicleId, setEditingVehicleId] = useState(null);
@@ -8406,6 +8495,16 @@ window.RoutePlansTab = ({ data, setData }) => {
     // Published record already out to a driver/stakeholder), which Cancel status is the honest way to
     // retire, not a silent delete.
     const [pendingDeletePlan, setPendingDeletePlan] = useState(null);
+    // The Assigned/Published plan pending cancellation, or null. Delete stays Draft-only on purpose
+    // (see pendingDeletePlan above); once a vehicle is committed - and especially once the plan has
+    // gone out to a driver and a stakeholder - the honest retirement is a Cancelled status that keeps
+    // the record and pulls it back off the apps, not a silent removal that leaves a driver holding a
+    // trip nobody can explain.
+    const [pendingCancelPlan, setPendingCancelPlan] = useState(null);
+    // The shuttle loop pending cancellation, or null - same confirm-gated shape as pendingCancelPlan
+    // above, kept separate because a loop and a one-off plan retire for different reasons and the
+    // confirmation has to say different things (a loop has vehicles and possibly daily riders).
+    const [pendingCancelShuttle, setPendingCancelShuttle] = useState(null);
     // True while the "Publish All" confirm is open - same staged-then-confirm convention as
     // pendingReassignment/pendingDeletePlan above, since this can dispatch several plans out to the
     // Driver/Stakeholder apps at once and deserves the same "see what's about to happen first" pause a
@@ -8485,7 +8584,126 @@ window.RoutePlansTab = ({ data, setData }) => {
         setData(dt => ({ ...dt, pendingDemands: dt.pendingDemands.map(pd => pd.ref === d.ref ? refreshed : pd) }));
         setSelectedDemand(refreshed);
         const { origin, destination } = window.routeForDemand(refreshed, data);
-        setForm(f => ({ ...f, demandRef: refreshed.ref, sourceEventNoticeId: null, origin, destination, time: refreshed.time || '' }));
+        // A demand opened from its own Suggested Plan card arrives with its delegation and journey
+        // already decided - it IS an arrival or a departure for one known delegation - so both are set
+        // here too, keeping the modal's own two questions answered rather than blank behind the
+        // pre-filled route.
+        const mp = data.manualPlans.find(p => p.id === d.sourceManualPlanId);
+        setSourceMode('delegation');
+        setJourneyType((d.legType || '').toLowerCase() === 'departure' ? 'departure' : 'arrival');
+        setForm(f => ({ ...f, demandRef: refreshed.ref, sourceEventNoticeId: null, adHocGroupId: null,
+            delegationKey: mp ? `${mp.federation}::${mp.soa}` : '',
+            origin, destination, time: refreshed.time || '', date: refreshed.scheduledDate || '' }));
+    };
+
+    // Every delegation this platform actually knows about, derived from Travel Plans rather than from
+    // the pendingDemands queue. A demand is a to-do item - it is consumed and removed the moment a plan
+    // is created from it (see createPlan) - so reading the picker off that queue meant a delegation
+    // vanished from the manual builder the moment their arrival was planned, even though they are in
+    // the country for another fortnight and still need venue trips. A Travel Plan persists, so this
+    // does too. Keyed on Federation + SOA, since that pair is what a delegation actually is here; its
+    // accommodation comes from the SOA, section 2.5's own resolution, not from the plan.
+    const delegations = useMemo(() => {
+        const byKey = new Map();
+        data.manualPlans.forEach(mp => {
+            if (!mp.federation || !mp.soa) return;
+            const key = `${mp.federation}::${mp.soa}`;
+            if (!byKey.has(key)) {
+                byKey.set(key, {
+                    key, federation: mp.federation, soa: mp.soa, label: `${mp.soa} - ${mp.federation}`,
+                    accommodation: (data.accommodationAssignments.find(a => a.soa === mp.soa) || {}).accommodation || '',
+                    arrivalPlan: null, departurePlan: null, memberSize: 0, planIds: [],
+                });
+            }
+            const entry = byKey.get(key);
+            entry.planIds.push(mp.id);
+            entry.memberSize = Math.max(entry.memberSize, Number(mp.memberSize) || (mp.people || []).length || 0);
+            if (mp.planType === 'Departure') entry.departurePlan = entry.departurePlan || mp;
+            else entry.arrivalPlan = entry.arrivalPlan || mp;
+        });
+        return [...byKey.values()].sort((a, b) => a.label.localeCompare(b.label));
+    }, [data.manualPlans, data.accommodationAssignments]);
+
+    const selectedDelegation = delegations.find(d => d.key === form.delegationKey) || null;
+
+    // The accommodation end of an accommodation-to-venue (or back) journey, for whichever party is
+    // currently picked. A delegation has one by definition. A hand-built party only has one when every
+    // person in it happens to share an SOA - a party deliberately drawn from two different delegations
+    // has no single "their accommodation" to fill in, and is offered the custom journey instead rather
+    // than being handed one of the two arbitrarily.
+    const customPartyAccommodation = useMemo(() => {
+        if (groupSelectedIds.length === 0) return '';
+        const soas = [...new Set(groupSelectedIds
+            .map(id => (data.atomMasterDirectory.find(p => p.id === id) || {}).soa)
+            .filter(Boolean))];
+        if (soas.length !== 1) return '';
+        return (data.accommodationAssignments.find(a => a.soa === soas[0]) || {}).accommodation || '';
+    }, [groupSelectedIds, data.atomMasterDirectory, data.accommodationAssignments]);
+
+    const partyAccommodation = sourceMode === 'delegation' ? (selectedDelegation?.accommodation || '') : customPartyAccommodation;
+
+    // How many people whoever is currently picked actually is - a delegation's own member count, or
+    // the size of a hand built party. Every other path derives headcount this way rather than asking;
+    // the Event Notice path pre-fills its own editable Headcount field from it.
+    const partyHeadcount = sourceMode === 'delegation'
+        ? (selectedDelegation?.memberSize || 0)
+        : groupSelectedIds.length;
+
+    // The name this plan's stakeholder line ends up carrying, whichever way the party was picked.
+    const partyLabel = sourceMode === 'delegation' ? (selectedDelegation?.label || '') : groupNameInput.trim();
+
+    // Which of the five journeys can actually be built for whoever is currently picked. Arrival and
+    // Departure need that delegation's own transport leg (the Travel Plan carries the airport/station
+    // and the booked time); accommodation-to-venue and back need a known accommodation. Anything that
+    // cannot be filled from real data is left off the list rather than offered and then found empty -
+    // the same "don't offer a choice that isn't real" rule the rest of this platform follows.
+    const journeyOptions = useMemo(() => {
+        const opts = [];
+        if (sourceMode === 'delegation' && selectedDelegation) {
+            if (selectedDelegation.arrivalPlan) opts.push({ key: 'arrival', label: 'Arrival', hint: 'Airport or station to their accommodation' });
+            if (selectedDelegation.departurePlan) opts.push({ key: 'departure', label: 'Departure', hint: 'Accommodation to their airport or station' });
+        }
+        if (partyAccommodation) {
+            opts.push({ key: 'accToVenue', label: 'Accommodation to venue', hint: `From ${partyAccommodation}` });
+            opts.push({ key: 'venueToAcc', label: 'Venue to accommodation', hint: `Back to ${partyAccommodation}` });
+        }
+        opts.push({ key: 'custom', label: 'Something else', hint: 'Pick both ends yourself' });
+        return opts;
+    }, [sourceMode, selectedDelegation, partyAccommodation]);
+
+    // Fills whichever end of the route the chosen journey already knows, and leaves the other for the
+    // admin. Arrival/Departure also carry their own booked date and time across from the Travel Plan,
+    // since that leg has a real schedule behind it; the venue journeys do not, they are planned against
+    // whatever day the admin is actually arranging.
+    const applyJourneyType = (type) => {
+        const arr = selectedDelegation?.arrivalPlan;
+        const dep = selectedDelegation?.departurePlan;
+        // If this delegation's arrival or departure still has its own live demand, route straight
+        // through applyDemand instead of prefilling by hand - that is the same trip the Suggested Plans
+        // card would have opened, so it should arrive with the same PNR-backed buffered time, the same
+        // confidence row, the same multi-leg split, and it should still consume that demand on create
+        // rather than leaving a stale duplicate suggestion behind.
+        const sourcePlan = type === 'arrival' ? arr : type === 'departure' ? dep : null;
+        if (sourcePlan) {
+            const liveDemand = data.pendingDemands.find(d => d.sourceManualPlanId === sourcePlan.id);
+            if (liveDemand) { applyDemand(liveDemand); return; }
+        }
+        setJourneyType(type);
+        setSelectedDemand(null);
+        setForm(f => {
+            if (type === 'arrival' && arr) {
+                return { ...f, origin: data.locations.includes(arr.location) ? arr.location : '',
+                    destination: partyAccommodation, date: toISODate(arr.date), time: arr.time || f.time };
+            }
+            if (type === 'departure' && dep) {
+                return { ...f, origin: partyAccommodation,
+                    destination: data.locations.includes(dep.location) ? dep.location : '',
+                    date: toISODate(dep.date), time: dep.time || f.time };
+            }
+            if (type === 'accToVenue') return { ...f, origin: partyAccommodation, destination: '' };
+            if (type === 'venueToAcc') return { ...f, origin: '', destination: partyAccommodation };
+            return { ...f, origin: '', destination: '' };
+        });
     };
 
     // Logic 2's own modal entry point - deliberately does NOT set demandRef/selectedDemand (there is no
@@ -8494,9 +8712,49 @@ window.RoutePlansTab = ({ data, setData }) => {
     // hand - see createPlan's own sourceEventNoticeId branch.
     const applyEventNotice = (notice) => {
         setSelectedDemand(null);
+        setJourneyType('');
+        resetGroupBuilder();
         setForm(f => ({ ...f, demandRef: '', sourceEventNoticeId: notice.id, origin: '',
             destination: data.locations.includes(notice.venue) ? notice.venue : '', time: notice.time || '',
-            eventStakeholder: '', eventHeadcount: '' }));
+            eventHeadcount: '', delegationKey: '', adHocGroupId: null }));
+    };
+
+    // Logic 3's own modal entry point - like applyEventNotice, pre-fills nothing this source doesn't
+    // actually know (no origin, destination, date, or time - a group has none of those until an admin
+    // picks them), just names the party this plan is for. Reusing an already-saved group loads its
+    // members straight back into the same builder fields, so a saved group is a starting point that can
+    // still be adjusted for this trip, not a locked record.
+    const applyAdHocGroup = (group) => {
+        setSelectedDemand(null);
+        setSourceMode('custom');
+        setJourneyType('');
+        setGroupSelectedIds(group.memberIds);
+        setGroupNameInput(group.name);
+        setGroupSearch('');
+        // On the Event Notice path the venue/date/time are the fixture's, not this party's, so they
+        // are left alone; everywhere else a fresh party starts with a blank route.
+        setForm(f => f.sourceEventNoticeId
+            ? { ...f, demandRef: '', adHocGroupId: group.id, delegationKey: '' }
+            : { ...f, demandRef: '', sourceEventNoticeId: null, adHocGroupId: group.id,
+                delegationKey: '', origin: '', destination: '', time: '', date: '' });
+    };
+
+    // Cross-Federation, cross-SOA by design (see data.adHocGroups' own header comment) - matches on
+    // name or Atom ID only, never gated by Federation/SOA/Member Type the way Travel Plans' own Members
+    // picker is, since an ad hoc group is exactly the case where that gate would get in the way.
+    const groupSearchResults = useMemo(() => {
+        const q = groupSearch.trim().toLowerCase();
+        if (q.length < 2) return [];
+        return data.atomMasterDirectory.filter(p =>
+            !groupSelectedIds.includes(p.id) &&
+            (`${p.firstName} ${p.lastName}`.toLowerCase().includes(q) || p.id.toLowerCase().includes(q))
+        ).slice(0, 8);
+    }, [data.atomMasterDirectory, groupSearch, groupSelectedIds]);
+
+    const resetGroupBuilder = () => {
+        setGroupSearch('');
+        setGroupSelectedIds([]);
+        setGroupNameInput('');
     };
 
     // Clears a notice's own `changed` flag once an admin has seen it - the "Changed" callout itself
@@ -8663,20 +8921,48 @@ window.RoutePlansTab = ({ data, setData }) => {
     const resetCreateForm = () => {
         setModal(false);
         setForm({ demandRef: '', vehicle: 'Unassigned', origin: '', destination: '', time: '',
-            sourceEventNoticeId: null, eventStakeholder: '', eventHeadcount: '' });
+            sourceEventNoticeId: null, eventHeadcount: '', adHocGroupId: null, date: '',
+            delegationKey: '' });
         setSelectedDemand(null);
+        setSourceMode('delegation');
+        setJourneyType('');
+        resetGroupBuilder();
+    };
+
+    // A hand built party, resolved for whichever branch is creating the plan: reuses the saved group
+    // unchanged where it is genuinely unchanged, otherwise mints a new one rather than mutating a
+    // record some other plan already points at. Returns null when the party is not usable yet.
+    const resolveCustomParty = () => {
+        if (groupSelectedIds.length === 0) { alert('Add at least one person to the travelling party.'); return null; }
+        if (!groupNameInput.trim()) { alert('Give this party a name - it is what the driver and the stakeholder both see on the trip.'); return null; }
+        const existing = data.adHocGroups.find(g => g.id === form.adHocGroupId);
+        const unchanged = !!existing && existing.name === groupNameInput.trim()
+            && existing.memberIds.length === groupSelectedIds.length
+            && existing.memberIds.every(id => groupSelectedIds.includes(id));
+        const group = unchanged ? existing : {
+            id: uid('GRP'), name: groupNameInput.trim(), memberIds: groupSelectedIds,
+            createdAt: new Date().toISOString(), createdBy: data.currentAdmin?.name || 'Unknown',
+        };
+        return { group, unchanged };
     };
 
     // Logic 2's own branch - an Upcoming Event Notice never carries a stakeholder or headcount (the
-    // whole point of Logic 2, see data.eventNotices' own header comment), so both are collected here
-    // directly instead of inherited from a demand; only a single vehicle, no multi-leg splitting (a
-    // human already had to type a headcount by hand here - Auto-Assign's leg math isn't worth the
-    // added complexity for a path that's manual by nature already).
+    // whole point of Logic 2, see data.eventNotices' own header comment), so who is travelling comes
+    // from the same picker every other path uses, a real delegation or a party built from the ATOM
+    // directory, never a typed name. Single vehicle, no multi-leg splitting - the party was assembled
+    // by hand here, so Auto-Assign's leg math isn't worth the added complexity on this path.
     const createPlanFromEventNotice = (notice) => {
         if (!form.origin || !form.destination) return alert('Select both an origin and a destination.');
         if (!form.time) return alert('Set a pickup time.');
-        if (!form.eventStakeholder.trim()) return alert('Enter which stakeholder or group this plan is for - Event Notices never guess one.');
-        const headcount = Number(form.eventHeadcount) || 1;
+        let party = null;
+        if (sourceMode === 'custom') {
+            party = resolveCustomParty();
+            if (!party) return;
+        } else if (!selectedDelegation) {
+            return alert('Pick which delegation this plan is for - Event Notices never guess one.');
+        }
+        const stakeholderName = sourceMode === 'custom' ? party.group.name : selectedDelegation.label;
+        const headcount = Number(form.eventHeadcount) || partyHeadcount || 1;
         const candidateWindow = window.computeTimeWindow(notice.date, form.time, `${form.origin} -> ${form.destination}`);
         let vehicleId = form.vehicle;
         let newPairing = null;
@@ -8692,8 +8978,9 @@ window.RoutePlansTab = ({ data, setData }) => {
             if (idle) newPairing = { driverId: idle.id, vehicleId };
         }
         const newPlan = {
-            id: uid('TP'), stakeholder: form.eventStakeholder.trim(), accommodation: '', roomBlock: '',
+            id: uid('TP'), stakeholder: stakeholderName, accommodation: partyAccommodation || '', roomBlock: '',
             demandRef: null, source: 'Event Notice', sourceEventNoticeId: notice.id,
+            adHocGroupId: party ? party.group.id : null,
             route: `${form.origin} -> ${form.destination}`, date: notice.date, time: form.time,
             vehicle: vehicleId, status: vehicleId === 'Unassigned' ? 'Draft' : 'Assigned', passengers: headcount,
             manualPlanId: null, timeSource: form.time !== notice.time ? 'manual' : 'suggested', suggestedTimeAtPublish: notice.time,
@@ -8701,11 +8988,111 @@ window.RoutePlansTab = ({ data, setData }) => {
         setData(d => ({
             ...d,
             travelPlans: [...d.travelPlans, newPlan],
+            adHocGroups: party && !party.unchanged ? [...d.adHocGroups, party.group] : d.adHocGroups,
             drivers: newPairing ? d.drivers.map(dr => dr.id === newPairing.driverId ? { ...dr, vehicleId: newPairing.vehicleId } : dr) : d.drivers,
             // linkedRouteIds (not a removal, unlike a consumed demand) - an event can reasonably need
             // more than one route plan (several delegations attending the same fixture), so the notice
             // itself stays active and reusable rather than disappearing after the first plan made from it.
             eventNotices: d.eventNotices.map(n => n.id === notice.id ? { ...n, linkedRouteIds: [...n.linkedRouteIds, newPlan.id] } : n),
+        }));
+        resetCreateForm();
+    };
+
+    // Logic 3's own branch - a group carries a name and a member list, nothing else; unlike Logic 1
+    // (a demand's own scheduledDate) or Logic 2 (the fixture's own date), there is no source to pull a
+    // date from, so this is the one branch where the modal's own Date field, form.date, is actually
+    // read - see that field's own "only shown for this branch" comment in the JSX. Single vehicle only,
+    // same reasoning as Logic 2's createPlanFromEventNotice - an admin already had to search for and
+    // pick every member by hand, so Auto-Assign's multi-leg split isn't worth adding here either.
+    const createPlanFromAdHocGroup = () => {
+        if (!form.origin || !form.destination) return alert('Select both an origin and a destination.');
+        if (!form.date) return alert('Set a date for this trip.');
+        if (!form.time) return alert('Set a pickup time.');
+        // The party is saved at submit, not as a separate earlier step - one assembled but never
+        // actually used for a plan isn't worth keeping. See resolveCustomParty.
+        const party = resolveCustomParty();
+        if (!party) return;
+        const { group, unchanged } = party;
+        const headcount = group.memberIds.length;
+        const candidateWindow = window.computeTimeWindow(form.date, form.time, `${form.origin} -> ${form.destination}`);
+        let vehicleId = form.vehicle;
+        let newPairing = null;
+        if (vehicleId === 'Unassigned') {
+            const [leg] = resolveLegs([headcount], null, form.origin, candidateWindow);
+            if (leg.vehicle) {
+                vehicleId = leg.vehicle.id;
+                if (leg.newlyPaired) newPairing = { driverId: leg.driver.id, vehicleId: leg.vehicle.id };
+            }
+        } else if (!driverOf(vehicleId)) {
+            const vehicle = allVehiclesWithVendor.find(v => v.id === vehicleId);
+            const idle = vehicle ? idleDriverFor(vehicle, new Set()) : null;
+            if (idle) newPairing = { driverId: idle.id, vehicleId };
+        }
+        const newPlan = {
+            id: uid('TP'), stakeholder: group.name, accommodation: partyAccommodation || '', roomBlock: '',
+            demandRef: null, source: 'Ad Hoc Group', adHocGroupId: group.id,
+            route: `${form.origin} -> ${form.destination}`, date: form.date, time: form.time,
+            vehicle: vehicleId, status: vehicleId === 'Unassigned' ? 'Draft' : 'Assigned', passengers: headcount,
+            // timeSource stays null deliberately - it is the Route Plan Suggestion Engine's own
+            // reliability log (how often the system's suggested time survived to publish), and a plan
+            // nothing ever suggested a time for would only dilute that number.
+            manualPlanId: null, timeSource: null, suggestedTimeAtPublish: null,
+        };
+        setData(d => ({
+            ...d,
+            travelPlans: [...d.travelPlans, newPlan],
+            adHocGroups: unchanged ? d.adHocGroups : [...d.adHocGroups, group],
+            drivers: newPairing ? d.drivers.map(dr => dr.id === newPairing.driverId ? { ...dr, vehicleId: newPairing.vehicleId } : dr) : d.drivers,
+        }));
+        resetCreateForm();
+    };
+
+    // A known delegation with no live demand behind this particular trip - every accommodation-to-venue
+    // and venue-to-accommodation plan, plus an arrival or departure whose own demand has already been
+    // consumed by an earlier plan. Single vehicle, same reasoning as the two branches above: the
+    // multi-leg split belongs to the suggestion path, where the headcount arrived with the demand.
+    const createPlanFromDelegation = () => {
+        if (!selectedDelegation) return alert('Pick which delegation this plan is for.');
+        if (!journeyType) return alert('Pick what kind of journey this is.');
+        if (!form.origin || !form.destination) return alert('Select both an origin and a destination.');
+        if (!form.date) return alert('Set a date for this trip.');
+        if (!form.time) return alert('Set a pickup time.');
+        const headcount = selectedDelegation.memberSize || 1;
+        const candidateWindow = window.computeTimeWindow(form.date, form.time, `${form.origin} -> ${form.destination}`);
+        let vehicleId = form.vehicle;
+        let newPairing = null;
+        if (vehicleId === 'Unassigned') {
+            const [leg] = resolveLegs([headcount], null, form.origin, candidateWindow);
+            if (leg.vehicle) {
+                vehicleId = leg.vehicle.id;
+                if (leg.newlyPaired) newPairing = { driverId: leg.driver.id, vehicleId: leg.vehicle.id };
+            }
+        } else if (!driverOf(vehicleId)) {
+            const vehicle = allVehiclesWithVendor.find(v => v.id === vehicleId);
+            const idle = vehicle ? idleDriverFor(vehicle, new Set()) : null;
+            if (idle) newPairing = { driverId: idle.id, vehicleId };
+        }
+        // manualPlanId is only set where this plan genuinely was generated from that Travel Plan, an
+        // arrival or a departure. A venue trip is planned for the same delegation but is not that
+        // manifest's own leg, so it stays unlinked rather than implying a lineage it does not have.
+        const sourcePlan = journeyType === 'arrival' ? selectedDelegation.arrivalPlan
+            : journeyType === 'departure' ? selectedDelegation.departurePlan : null;
+        const newPlan = {
+            id: uid('TP'), stakeholder: selectedDelegation.label,
+            accommodation: selectedDelegation.accommodation || '', roomBlock: '',
+            demandRef: null,
+            source: sourcePlan ? 'Travel Module' : (journeyType === 'custom' ? 'Manual' : 'Accommodation'),
+            route: `${form.origin} -> ${form.destination}`, date: form.date, time: form.time,
+            vehicle: vehicleId, status: vehicleId === 'Unassigned' ? 'Draft' : 'Assigned', passengers: headcount,
+            manualPlanId: sourcePlan ? sourcePlan.id : null, timeSource: null, suggestedTimeAtPublish: null,
+        };
+        setData(d => ({
+            ...d,
+            travelPlans: [...d.travelPlans, newPlan],
+            drivers: newPairing ? d.drivers.map(dr => dr.id === newPairing.driverId ? { ...dr, vehicleId: newPairing.vehicleId } : dr) : d.drivers,
+            manualPlans: sourcePlan
+                ? d.manualPlans.map(mp => mp.id === sourcePlan.id ? { ...mp, linkedRouteIds: [...(mp.linkedRouteIds || []), newPlan.id] } : mp)
+                : d.manualPlans,
         }));
         resetCreateForm();
     };
@@ -8716,9 +9103,15 @@ window.RoutePlansTab = ({ data, setData }) => {
             if (!notice) return alert('This event notice is no longer available.');
             return createPlanFromEventNotice(notice);
         }
+        if (sourceMode === 'custom') return createPlanFromAdHocGroup();
 
+        // The suggestion-backed path below only applies when this exact trip still has its own live
+        // demand - an arrival or departure opened from its own Suggested Plan card. Every other
+        // delegation journey (a venue run, or a leg whose demand an earlier plan already consumed) has
+        // no demand to inherit a headcount, buffered time or multi-leg split from, and goes through
+        // createPlanFromDelegation instead.
         const demand = data.pendingDemands.find(d => d.ref === form.demandRef);
-        if (!demand) return alert('Select a reference.');
+        if (!demand) return createPlanFromDelegation();
         if (!form.origin || !form.destination) return alert('Select both an origin and a destination.');
         // Time is a required, hard input for creating a ride, same as origin/destination - not
         // something ever silently defaulted (e.g. to "right now") on the admin's behalf.
@@ -8921,6 +9314,22 @@ window.RoutePlansTab = ({ data, setData }) => {
                 : d.manualPlans,
         }));
         setPendingDeletePlan(null);
+    };
+
+    // Retires a plan that has a vehicle committed, without destroying the record - the status stays on
+    // the board as Cancelled so there is still an answer to "what happened to that trip", the vehicle
+    // and driver fall back out of Reserved on the next allocation read (nothing holds them but this
+    // plan's own status), and a plan that had already been Published is pulled back off the bridge so
+    // the driver and the stakeholder stop being shown a trip that is no longer happening.
+    const cancelPlan = () => {
+        if (!pendingCancelPlan) return;
+        const { id } = pendingCancelPlan;
+        setData(d => ({
+            ...d,
+            travelPlans: d.travelPlans.map(p => p.id === id ? { ...p, status: 'Cancelled', cancelledAt: Date.now() } : p),
+        }));
+        window.retractRoutePlanFromBridge(id);
+        setPendingCancelPlan(null);
     };
 
     const availableVehicles = useMemo(() =>
@@ -9239,6 +9648,42 @@ window.RoutePlansTab = ({ data, setData }) => {
                 : s),
         }));
     };
+
+    // Releases a shuttle loop to the Driver and Stakeholder apps. Only an Active loop can go out - a
+    // Draft one has no vehicle to run it, and a Paused one is not running - the same "vehicle
+    // committed first" rule a Route Plan's own Publish follows. Publishing is one-way: after this, the
+    // loop's later changes (vehicles added or removed, paused, resumed) follow it out automatically
+    // through the sync effect below, rather than needing a re-publish each time.
+    const publishShuttle = (shuttleId) => {
+        setData(d => ({
+            ...d,
+            shuttlePlans: d.shuttlePlans.map(s => s.id === shuttleId && s.status === 'Active' && !s.publishedAt
+                ? { ...s, publishedAt: new Date().toISOString() } : s),
+        }));
+    };
+
+    // Retires a shuttle loop for good. Offered as soon as a loop has a vehicle on it, published or
+    // not, since by then a vehicle (and its driver) is committed to running it - the same line Route
+    // Plans draws between Delete (a Draft nobody has committed to) and Cancel. The record stays on the
+    // board so there is still an answer to "what happened to that loop", its vehicles fall free, and
+    // if it had already gone out it drops off the bridge through the sync effect below.
+    const cancelShuttle = () => {
+        if (!pendingCancelShuttle) return;
+        const { id } = pendingCancelShuttle;
+        setData(d => ({
+            ...d,
+            shuttlePlans: d.shuttlePlans.map(s => s.id === id ? { ...s, status: 'Cancelled', cancelledAt: Date.now() } : s),
+        }));
+        setPendingCancelShuttle(null);
+    };
+
+    // Keeps the published set on the bridge in step with this panel. Runs on every change to
+    // data.shuttlePlans rather than inside each handler, so no future edit path (a new vehicle picker,
+    // an import) can forget to re-sync a loop that is already out. React.useEffect explicitly - this
+    // script block never destructured useEffect.
+    React.useEffect(() => {
+        window.syncPublishedShuttlesToBridge(data.shuttlePlans);
+    }, [data.shuttlePlans]);
 
     const handleImport = (file) => importCSV(file, rows => {
         const imported = rows.map(r => {
@@ -9579,23 +10024,38 @@ window.RoutePlansTab = ({ data, setData }) => {
                     plans get a quiet "already out" note instead - see it again by picking a different
                     vehicle (drops back to Assigned) then Publish once more. */}
                 {status === 'Assigned' && (
-                    <div className="mt-3 pt-3 border-t border-slate-100">
+                    <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
                         <button onClick={() => publishPlan(p)} disabled={!p.time}
                             title={!p.time ? 'Set a pickup time first' : ''}
                             className={`w-full inline-flex items-center justify-center gap-1.5 text-xs font-semibold rounded-lg py-2 transition ${
                                 p.time ? 'text-white bg-violet-600 hover:bg-violet-700' : 'text-slate-400 bg-slate-100 cursor-not-allowed'}`}>
                             <Icon name="check" size={13} />Publish {!p.time && '(needs a pickup time)'}
                         </button>
+                        <div className="text-right">
+                            <button onClick={() => setPendingCancelPlan(p)}
+                                className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-400 hover:text-red-600 transition">
+                                <Icon name="close" size={13} />Cancel Plan
+                            </button>
+                        </div>
                     </div>
                 )}
                 {status === 'Published' && (
-                    <p className="mt-3 pt-3 border-t border-slate-100 text-xs text-violet-600 flex items-center gap-1.5">
-                        <Icon name="check" size={13} className="shrink-0" />Published - visible to {driver ? driver.name : 'the assigned driver'}{p.manualPlanId ? ' and the relevant stakeholder' : ''}.
-                    </p>
+                    <div className="mt-3 pt-3 border-t border-slate-100 flex items-start justify-between gap-3">
+                        <p className="text-xs text-violet-600 flex items-center gap-1.5">
+                            <Icon name="check" size={13} className="shrink-0" />Published - visible to {driver ? driver.name : 'the assigned driver'}{p.manualPlanId ? ' and the relevant stakeholder' : ''}.
+                        </p>
+                        <button onClick={() => setPendingCancelPlan(p)}
+                            className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-400 hover:text-red-600 transition shrink-0">
+                            <Icon name="close" size={13} />Cancel Plan
+                        </button>
+                    </div>
                 )}
                 {/* Delete only ever offered on a Draft plan (pendingDeletePlan's own comment) -
-                    anything past that has a real vehicle committed, possibly already Published, and
-                    should be retired with Cancel instead, not silently removed. */}
+                    anything past that has a real vehicle committed, possibly already Published, and is
+                    retired with Cancel Plan above instead, which keeps the record and pulls it back off
+                    the driver's and stakeholder's apps rather than removing it silently. Ongoing and
+                    Completed offer neither: a trip physically under way is not cancelled from a form,
+                    and a finished one is history. */}
                 {status === 'Draft' && (
                     <div className="mt-3 pt-3 border-t border-slate-100 text-right">
                         <button onClick={() => setPendingDeletePlan(p)}
@@ -9609,7 +10069,8 @@ window.RoutePlansTab = ({ data, setData }) => {
     };
 
     const renderShuttleCard = (s) => {
-        const accent = s.status === 'Paused' ? 'border-l-amber-400' : 'border-l-emerald-400';
+        const cancelled = s.status === 'Cancelled';
+        const accent = cancelled ? 'border-l-slate-300' : s.status === 'Paused' ? 'border-l-amber-400' : 'border-l-emerald-400';
         return (
             <div key={s.id}
                 className={`bg-white border border-slate-300 border-l-4 ${accent} rounded-xl p-4 shadow-sm hover:shadow-md hover:border-slate-400 transition-all`}>
@@ -9632,9 +10093,11 @@ window.RoutePlansTab = ({ data, setData }) => {
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                         <Badge status={s.status} />
-                        <Btn variant="outline" onClick={() => toggleShuttleStatus(s.id)}>
-                            {s.status === 'Paused' ? 'Resume' : 'Pause'}
-                        </Btn>
+                        {!cancelled && (
+                            <Btn variant="outline" onClick={() => toggleShuttleStatus(s.id)}>
+                                {s.status === 'Paused' ? 'Resume' : 'Pause'}
+                            </Btn>
+                        )}
                     </div>
                 </div>
 
@@ -9685,34 +10148,71 @@ window.RoutePlansTab = ({ data, setData }) => {
                         </div>
                     </div>
                 </div>
+
+                {/* Same footer shape as a Route Plan card's own Publish. Before publishing, the
+                    button explains what is missing instead of silently doing nothing; after, the
+                    footer says who can now see it, and notes that later edits follow it out. */}
+                <div className="mt-3 pt-3 border-t border-slate-100">
+                    {cancelled ? (
+                        <p className="text-xs text-slate-400 flex items-center gap-1.5">
+                            <Icon name="close" size={13} className="shrink-0" />
+                            Cancelled - no longer running, and removed from the Driver and Stakeholder apps.
+                        </p>
+                    ) : !s.publishedAt ? (
+                        <button onClick={() => publishShuttle(s.id)} disabled={s.status !== 'Active'}
+                            title={s.status === 'Draft' ? 'Add a vehicle first' : s.status === 'Paused' ? 'Resume the loop first' : ''}
+                            className={`w-full inline-flex items-center justify-center gap-1.5 text-xs font-semibold rounded-lg py-2 transition ${
+                                s.status === 'Active' ? 'text-white bg-violet-600 hover:bg-violet-700' : 'text-slate-400 bg-slate-100 cursor-not-allowed'}`}>
+                            <Icon name="check" size={13} />Publish
+                            {s.status === 'Draft' && ' (needs a vehicle)'}
+                            {s.status === 'Paused' && ' (resume it first)'}
+                        </button>
+                    ) : (
+                        <p className="text-xs text-violet-600 flex items-center gap-1.5">
+                            <Icon name="check" size={13} className="shrink-0" />
+                            {s.status === 'Paused'
+                                ? 'Published, currently paused - hidden from drivers and stakeholders until resumed.'
+                                : s.status === 'Draft'
+                                    ? 'Published, but no vehicle is on it - hidden from drivers and stakeholders until one is added.'
+                                    : `Published - visible to the ${s.vehicles.length === 1 ? 'driver' : `${s.vehicles.length} drivers`} on this loop and to stakeholders. Changes here update both apps.`}
+                        </p>
+                    )}
+                    {/* Offered from the moment a vehicle is on the loop, published or not - that is
+                        the point a vehicle and driver are committed to running it. */}
+                    {!cancelled && s.vehicles.length > 0 && (
+                        <div className="mt-2 text-right">
+                            <button onClick={() => setPendingCancelShuttle(s)}
+                                className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-400 hover:text-red-600 transition">
+                                <Icon name="close" size={13} />Cancel Loop
+                            </button>
+                        </div>
+                    )}
+                </div>
             </div>
         );
     };
 
     // Each "View All" hands off to its own paginated page (12/page) instead of a Modal - same
     // renderer each list already uses for its inline preview, just unpaginated and full-width.
-    if (showAllSuggestions) {
-        return (
-            <PaginatedListPage title="All Suggested Plans" items={filteredDemands} renderItem={renderSuggestionCard}
-                onBack={() => setShowAllSuggestions(false)} gridClassName="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3"
-                emptyMessage="No suggestions match your search." />
-        );
-    }
-    if (showAllPlans) {
-        return (
-            <PaginatedListPage title="All Active & Draft Plans" items={filteredPlans} renderItem={renderPlanCard}
-                onBack={() => setShowAllPlans(false)} emptyMessage="No travel plans match your search or filter." />
-        );
-    }
-    if (showAllShuttles) {
-        return (
-            <PaginatedListPage title="All Recurring Shuttle Plans" items={data.shuttlePlans} renderItem={renderShuttleCard}
-                onBack={() => setShowAllShuttles(false)} emptyMessage="No recurring shuttle plans yet." />
-        );
-    }
+    // Rendered in place of the tab's main content, NOT as an early return: every confirmation dialog
+    // below (Cancel Plan, Delete Draft, reassignment, Create Route Plan...) lives in the one main
+    // return, and an early return here used to drop all of them - so a card's Cancel/Delete click on
+    // a View All page set its pending state and then showed nothing at all.
+    const listPage = showAllSuggestions ? (
+        <PaginatedListPage title="All Suggested Plans" items={filteredDemands} renderItem={renderSuggestionCard}
+            onBack={() => setShowAllSuggestions(false)} gridClassName="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3"
+            emptyMessage="No suggestions match your search." />
+    ) : showAllPlans ? (
+        <PaginatedListPage title="All Active & Draft Plans" items={filteredPlans} renderItem={renderPlanCard}
+            onBack={() => setShowAllPlans(false)} emptyMessage="No travel plans match your search or filter." />
+    ) : showAllShuttles ? (
+        <PaginatedListPage title="All Recurring Shuttle Plans" items={data.shuttlePlans} renderItem={renderShuttleCard}
+            onBack={() => setShowAllShuttles(false)} emptyMessage="No recurring shuttle plans yet." />
+    ) : null;
 
     return (
         <div className="max-w-7xl mx-auto animate-in">
+            {listPage || (<>
             <div className="flex flex-wrap justify-between items-center gap-3 mb-6">
                 <div>
                     <h2 className="text-lg font-semibold text-slate-800">Route Plans</h2>
@@ -9735,8 +10235,9 @@ window.RoutePlansTab = ({ data, setData }) => {
                 </div>
                 <h3 className="text-lg font-semibold">Create a Route Plan</h3>
                 <p className="text-sm text-white/70 max-w-md mx-auto mt-1.5">
-                    Pair a stakeholder delegation - or an upcoming event - with a vehicle, driver and pickup time.
-                    Start from a Suggested Plan or an Event Notice below, or build one from scratch.
+                    Any movement, any two points. Start from a suggested arrival or departure, an upcoming
+                    event, or search the ATOM directory and build the travelling party yourself, then pair
+                    it with a vehicle, driver and pickup time.
                 </p>
                 <Btn className="mt-5" onClick={() => setModal(true)}>
                     <Icon name="plus" size={14} className="inline mr-1.5" />Create Route Plan
@@ -9904,6 +10405,7 @@ window.RoutePlansTab = ({ data, setData }) => {
                     </div>
                 </Card>
             </div>
+            </>)}
 
             {/* Create Shuttle Plan Modal */}
             <Modal open={shuttleModal} onClose={() => setShuttleModal(false)} title="Create Recurring Shuttle Plan">
@@ -10021,14 +10523,170 @@ window.RoutePlansTab = ({ data, setData }) => {
                 </div>
             </Modal>
 
-            {/* Create Route Plan Modal (Travel Module / Accommodation) */}
+            {/* Create Route Plan Modal - one entry point for every kind of movement, asking two
+                independent questions rather than one that silently answered both. WHO is travelling: a
+                delegation the platform already knows from Travel Plans, or a party the admin assembles
+                by hand from the ATOM directory. WHERE they are going: an arrival, a departure, their
+                accommodation out to a venue, a venue back to their accommodation, or anything else two
+                points on the Location list can be joined up into. Picking the delegation no longer
+                decides the journey for them, which is what made this feel hardwired to arrivals. */}
             <Modal open={modal} onClose={() => setModal(false)} title="Create Route Plan">
                 <div className="space-y-3">
-                    <Select label="Select Reference" value={form.demandRef} onChange={e => {
-                        const d = data.pendingDemands.find(x => x.ref === e.target.value);
-                        if (d) applyDemand(d);
-                        else { setSelectedDemand(null); setForm(f => ({ ...f, demandRef: '' })); }
-                    }} options={[{ value: '', label: form.sourceEventNoticeId ? '(Event Notice - no reference)' : 'Select reference...' }, ...data.pendingDemands.map(d => ({ value: d.ref, label: `[${d.source}] ${d.stakeholder}` }))]} />
+                    {/* Asked on every path, including an Event Notice. A notice knows the venue and
+                        the time but never who is going - that is the whole point of Logic 2 - so it
+                        needs this picker more than the others, not less. It used to ask for a typed
+                        name instead, which was the one place in this flow a stakeholder could be
+                        invented rather than chosen. */}
+                    {true && (
+                        <div>
+                            <label className="block text-xs font-medium text-slate-600 mb-1.5">Who is travelling?</label>
+                            <div className="grid grid-cols-2 gap-2">
+                                {[
+                                    { key: 'delegation', label: 'A known delegation', hint: 'From Travel Plans' },
+                                    { key: 'custom', label: 'Build the party yourself', hint: 'Search the ATOM directory' },
+                                ].map(opt => (
+                                    <button key={opt.key} type="button"
+                                        onClick={() => {
+                                            setSourceMode(opt.key);
+                                            setJourneyType('');
+                                            // On the Event Notice path the destination is the fixture's
+                                            // venue, not something this choice gets to clear - only the
+                                            // party changes here.
+                                            const keepVenue = !!form.sourceEventNoticeId;
+                                            if (opt.key === 'delegation') {
+                                                setForm(f => ({ ...f, adHocGroupId: null, origin: '', destination: keepVenue ? f.destination : '' }));
+                                                resetGroupBuilder();
+                                            } else {
+                                                setSelectedDemand(null);
+                                                setForm(f => ({ ...f, demandRef: '', delegationKey: '', origin: '', destination: keepVenue ? f.destination : '' }));
+                                            }
+                                        }}
+                                        className={`text-left px-3 py-2.5 rounded-xl border transition ${sourceMode === opt.key
+                                            ? 'border-brandAccent bg-blue-50 ring-1 ring-brandAccent/30'
+                                            : 'border-slate-200 bg-white hover:border-slate-300'}`}>
+                                        <p className={`text-xs font-semibold ${sourceMode === opt.key ? 'text-brandAccent' : 'text-slate-700'}`}>{opt.label}</p>
+                                        <p className="text-[11px] text-slate-400 mt-0.5">{opt.hint}</p>
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {sourceMode === 'delegation' && (
+                        <div>
+                            <Select label="Delegation" value={form.delegationKey} onChange={e => {
+                                // Their accommodation is known the moment they are, through their SOA.
+                                // A delegation with none yet is still selectable - the journey options
+                                // below simply drop the two accommodation journeys and say why, rather
+                                // than this refusing the selection outright.
+                                setSelectedDemand(null);
+                                setJourneyType('');
+                                const dlg = delegations.find(x => x.key === e.target.value) || null;
+                                setForm(f => f.sourceEventNoticeId
+                                    // On the Event Notice path the venue, date and time came from the
+                                    // fixture and must survive picking a delegation; only the origin is
+                                    // this choice's to fill, from their accommodation.
+                                    ? { ...f, delegationKey: e.target.value, demandRef: '', adHocGroupId: null,
+                                        origin: dlg?.accommodation && data.locations.includes(dlg.accommodation) ? dlg.accommodation : '' }
+                                    : { ...f, delegationKey: e.target.value, demandRef: '', adHocGroupId: null,
+                                        origin: '', destination: '', time: '', date: '' });
+                            }} options={[{ value: '', label: 'Select a delegation...' },
+                                ...delegations.map(d => ({ value: d.key, label: `${d.label}${d.accommodation ? ` · ${d.accommodation}` : ' · no accommodation yet'}` }))]} />
+                            {selectedDelegation && (
+                                <p className="text-[11px] text-slate-400 mt-1">
+                                    {selectedDelegation.memberSize} member{selectedDelegation.memberSize === 1 ? '' : 's'}
+                                    {selectedDelegation.accommodation
+                                        ? ` · staying at ${selectedDelegation.accommodation}`
+                                        : ' · no accommodation assigned yet, so accommodation journeys are unavailable'}
+                                </p>
+                            )}
+                        </div>
+                    )}
+
+                    {sourceMode === 'custom' && (
+                        <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-3">
+                            {data.adHocGroups.length > 0 && (
+                                <div>
+                                    <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Reuse a saved party</p>
+                                    <div className="flex flex-wrap gap-1.5">
+                                        {data.adHocGroups.map(g => (
+                                            <button key={g.id} type="button" onClick={() => applyAdHocGroup(g)}
+                                                className={`text-xs px-2.5 py-1 rounded-full border transition ${form.adHocGroupId === g.id
+                                                    ? 'border-brandAccent bg-blue-50 text-brandAccent font-medium'
+                                                    : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'}`}>
+                                                {g.name} <span className="text-slate-400">&middot; {g.memberIds.length}</span>
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                            <div>
+                                <Input label="Add people by name or Atom ID" value={groupSearch} onChange={e => setGroupSearch(e.target.value)}
+                                    placeholder="e.g. Vikrant More, or ATOM-20011" />
+                                {groupSearch.trim().length >= 2 && (
+                                    <div className="mt-1.5 bg-white border border-slate-200 rounded-lg divide-y divide-slate-100 max-h-44 overflow-y-auto">
+                                        {groupSearchResults.length === 0 ? (
+                                            <p className="px-3 py-2.5 text-xs text-slate-400">No match in the ATOM directory.</p>
+                                        ) : groupSearchResults.map(p => (
+                                            <button key={p.id} type="button"
+                                                onClick={() => { setGroupSelectedIds(ids => [...ids, p.id]); setGroupSearch(''); }}
+                                                className="w-full text-left px-3 py-2 hover:bg-slate-50 transition flex items-center justify-between gap-2">
+                                                <div className="min-w-0">
+                                                    <p className="text-sm text-slate-700 truncate">{p.firstName} {p.lastName}</p>
+                                                    <p className="text-[11px] text-slate-400">{p.id} &middot; {p.federation} - {p.soa} &middot; {p.stakeholderType}</p>
+                                                </div>
+                                                <Icon name="plus" size={14} className="text-slate-400 shrink-0" />
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                            {groupSelectedIds.length > 0 && (
+                                <div className="flex flex-wrap gap-1.5">
+                                    {groupSelectedIds.map(id => {
+                                        const p = data.atomMasterDirectory.find(x => x.id === id);
+                                        if (!p) return null;
+                                        return (
+                                            <span key={id} className="inline-flex items-center gap-1.5 bg-blue-50 text-brandAccent text-xs font-medium pl-2.5 pr-1.5 py-1 rounded-full">
+                                                {p.firstName} {p.lastName}
+                                                <button type="button" onClick={() => setGroupSelectedIds(ids => ids.filter(x => x !== id))}
+                                                    className="hover:bg-blue-100 rounded-full p-0.5">
+                                                    <Icon name="close" size={11} />
+                                                </button>
+                                            </span>
+                                        );
+                                    })}
+                                </div>
+                            )}
+                            <Input label="Name this party" value={groupNameInput} onChange={e => setGroupNameInput(e.target.value)}
+                                placeholder="e.g. Press Briefing - Afternoon Session" />
+                            <p className="text-[11px] text-slate-400">
+                                Saved when the plan is created, so it can be reused for a later trip without searching again.
+                                People can come from any Federation or SOA - a party that crosses delegations is exactly what this is for.
+                            </p>
+                        </div>
+                    )}
+
+                    {/* WHERE they are going, asked only once there is somebody to ask it about. Only
+                        ever lists journeys that can actually be filled from real data for whoever is
+                        picked above, see journeyOptions' own comment. */}
+                    {!form.sourceEventNoticeId && (sourceMode === 'custom' ? groupSelectedIds.length > 0 : !!selectedDelegation) && (
+                        <div>
+                            <label className="block text-xs font-medium text-slate-600 mb-1.5">What kind of journey?</label>
+                            <div className="grid grid-cols-2 gap-2">
+                                {journeyOptions.map(opt => (
+                                    <button key={opt.key} type="button" onClick={() => applyJourneyType(opt.key)}
+                                        className={`text-left px-3 py-2 rounded-xl border transition ${journeyType === opt.key
+                                            ? 'border-brandAccent bg-blue-50 ring-1 ring-brandAccent/30'
+                                            : 'border-slate-200 bg-white hover:border-slate-300'}`}>
+                                        <p className={`text-xs font-semibold ${journeyType === opt.key ? 'text-brandAccent' : 'text-slate-700'}`}>{opt.label}</p>
+                                        <p className="text-[11px] text-slate-400 mt-0.5 truncate">{opt.hint}</p>
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
                     {selectedDemand && (
                         <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
                             {/* Hero: the auto-fetched/suggested PICKUP time (window.resolveSuggestedTime's
@@ -10079,16 +10737,27 @@ window.RoutePlansTab = ({ data, setData }) => {
                         return notice && (
                             <div className="bg-violet-50 border border-violet-200 rounded-lg p-3 text-xs text-violet-800 space-y-2">
                                 <p><strong>{notice.event}</strong> &middot; {notice.venue} &middot; {notice.date} at {notice.time}</p>
-                                <p className="text-violet-600">This is an event notice, not a confirmed passenger - enter who this plan is actually for below.</p>
-                                <div className="grid grid-cols-2 gap-2">
-                                    <Input label="Stakeholder / Group" value={form.eventStakeholder}
-                                        onChange={e => setForm(f => ({ ...f, eventStakeholder: e.target.value }))} placeholder="e.g. Team France - Fencing" />
-                                    <Input label="Headcount" type="number" min="1" value={form.eventHeadcount}
-                                        onChange={e => setForm(f => ({ ...f, eventHeadcount: e.target.value }))} placeholder="1" />
-                                </div>
+                                <p className="text-violet-600">
+                                    This is an event notice, not a confirmed passenger - pick who this plan is for above.
+                                    The destination and date come from the fixture.
+                                </p>
+                                {/* Headcount is filled in from whoever was picked above, and stays
+                                    editable, since only part of a delegation often attends a fixture. */}
+                                <Input label="Headcount" type="number" min="1"
+                                    value={form.eventHeadcount || partyHeadcount || ''}
+                                    onChange={e => setForm(f => ({ ...f, eventHeadcount: e.target.value }))} placeholder="1" />
                             </div>
                         );
                     })()}
+
+                    {/* Date is asked for only where nothing else already answers it: a demand-backed
+                        arrival or departure carries scheduledDate, an Event Notice carries the fixture's
+                        own date. A venue run or a hand built party carries neither, so those are the
+                        cases where the admin has to say which day this is actually happening. */}
+                    {!selectedDemand && !form.sourceEventNoticeId && (
+                        <Input label="Date" type="date" value={form.date}
+                            onChange={e => setForm(f => ({ ...f, date: e.target.value }))} />
+                    )}
 
                     {selectedDemand && (
                         <Select label="Stakeholder Type" value={selectedDemand.stakeholderType || ''}
@@ -10141,7 +10810,7 @@ window.RoutePlansTab = ({ data, setData }) => {
                                 )
                             )}
                             {(() => {
-                                const conflictDate = selectedDemand?.scheduledDate || data.eventNotices.find(n => n.id === form.sourceEventNoticeId)?.date;
+                                const conflictDate = selectedDemand?.scheduledDate || data.eventNotices.find(n => n.id === form.sourceEventNoticeId)?.date || (sourceMode === 'custom' ? form.date : null);
                                 const conflict = vehicleTimeConflict(form.vehicle, conflictDate, form.time, `${form.origin} -> ${form.destination}`, null);
                                 return conflict && (
                                     <div className="mt-2 bg-amber-50 border border-amber-200 rounded-lg p-2.5 flex gap-2">
@@ -10224,6 +10893,66 @@ window.RoutePlansTab = ({ data, setData }) => {
                         </div>
                     </div>
                 )}
+            </Modal>
+
+            {/* Cancel Loop - a recurring loop's own equivalent of Cancel Plan below. Says how many
+                vehicles come free and, when it had already gone out, that it disappears from both
+                apps, since a loop people ride daily is not something to retire silently. */}
+            <Modal open={!!pendingCancelShuttle} onClose={() => setPendingCancelShuttle(null)} title="Cancel Shuttle Loop">
+                {pendingCancelShuttle && (
+                    <div className="space-y-4">
+                        <div className="bg-red-50 border border-red-200 rounded-lg p-3 flex gap-2.5">
+                            <Icon name="alert" size={18} className="text-red-500 shrink-0 mt-0.5" />
+                            <div className="text-sm text-red-800 space-y-1.5">
+                                <p>
+                                    Cancel the loop <strong>{pendingCancelShuttle.origins.join(', ')} to {pendingCancelShuttle.destination}</strong>?
+                                </p>
+                                <p className="text-xs text-red-700">
+                                    {pendingCancelShuttle.publishedAt
+                                        ? 'It has already been published, so it will disappear from the Driver and Stakeholder apps. '
+                                        : 'It has not been published yet, so nobody outside this panel has seen it. '}
+                                    {pendingCancelShuttle.vehicles.length === 1
+                                        ? '1 vehicle is freed up'
+                                        : `${pendingCancelShuttle.vehicles.length} vehicles are freed up`} for other trips. The loop stays on this board as Cancelled for the record.
+                                </p>
+                            </div>
+                        </div>
+                        <div className="flex gap-2">
+                            <Btn variant="danger" onClick={cancelShuttle}>Cancel Loop</Btn>
+                            <Btn variant="outline" onClick={() => setPendingCancelShuttle(null)}>Keep Loop</Btn>
+                        </div>
+                    </div>
+                )}
+            </Modal>
+
+            {/* Cancel Plan - confirm-gated like Delete, but the consequences are spelled out
+                differently because they are different: the record stays, and if it was already
+                Published it is pulled back off the driver's and stakeholder's apps. */}
+            <Modal open={!!pendingCancelPlan} onClose={() => setPendingCancelPlan(null)} title="Cancel Route Plan">
+                {pendingCancelPlan && (() => {
+                    const wasPublished = routePlanStatus(pendingCancelPlan, data) === 'Published';
+                    const cancelDriver = driverOf(pendingCancelPlan.vehicle);
+                    return (
+                        <div className="space-y-4">
+                            <div className="bg-red-50 border border-red-200 rounded-lg p-3 flex gap-2.5">
+                                <Icon name="alert" size={18} className="text-red-500 shrink-0 mt-0.5" />
+                                <div className="text-sm text-red-800 space-y-1.5">
+                                    <p>Cancel the plan for <strong>{pendingCancelPlan.stakeholder}</strong> ({pendingCancelPlan.route})?</p>
+                                    <p className="text-xs text-red-700">
+                                        {wasPublished
+                                            ? `It has already been published, so it will be removed from ${cancelDriver ? cancelDriver.name + "'s" : "the driver's"} app${pendingCancelPlan.manualPlanId ? ' and the stakeholder\'s app' : ''}. `
+                                            : ''}
+                                        {vehicleLabel(pendingCancelPlan.vehicle)} is freed up for other trips. The plan stays on this board as Cancelled for the record.
+                                    </p>
+                                </div>
+                            </div>
+                            <div className="flex gap-2">
+                                <Btn variant="danger" onClick={cancelPlan}>Cancel Plan</Btn>
+                                <Btn variant="outline" onClick={() => setPendingCancelPlan(null)}>Keep Plan</Btn>
+                            </div>
+                        </div>
+                    );
+                })()}
             </Modal>
 
             {/* Publish All - staged the same way as the other bulk/impactful actions on this page
