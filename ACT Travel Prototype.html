@@ -108,7 +108,7 @@ window.INITIAL_DATA = {
     vendors: [
         {
             id: 'VND-101', name: 'SwiftRide Logistics', contact: 'Anil Gupta', phone: '+91 98765 43210',
-            email: 'ops@swiftride.in', contract: 'Active', contractRenewalDate: '2027-01-15', colour: '#3B82F6', fleetCount: 8,
+            email: 'ops@swiftride.in', contract: 'Active', contractRenewalDate: '2027-01-15', colour: '#3B82F6', fleetCount: 9,
             gstinFile: 'SwiftRide_GSTIN.pdf', tradeCertFile: 'SwiftRide_TradeCert.pdf', pocImage: 'SwiftRide_POC.jpg',
             fleet: [
                 { id: 'VH-4401', type: 'Bus', model: 'Ashok Leyland Viking', capacity: 40, regNo: 'DL-01-AB-4401', status: 'Active', lastRefuelDate: '2026-08-10' },
@@ -116,6 +116,12 @@ window.INITIAL_DATA = {
                 { id: 'VH-4403', type: 'Bus', model: 'Ashok Leyland Viking', capacity: 40, regNo: 'DL-01-AB-4403', status: 'Maintenance' },
                 { id: 'VH-2210', type: 'Minibus', model: 'Force Traveller', capacity: 20, regNo: 'DL-01-CD-2210', status: 'Active', lastRefuelDate: '2026-08-10' },
                 { id: 'VH-2211', type: 'Minibus', model: 'Tata Winger', capacity: 20, regNo: 'DL-01-CD-2211', status: 'Active' },
+                // The minibus stationed at Athletes Village for On-Call - the one the Stakeholder App's
+                // own candidate queue reaches first for an Athletes request from anywhere in the venue
+                // network (see ACT Stakeholder Prototype.html's STAKEHOLDER_APP_DATA.fleet). Based in
+                // New Delhi here because this panel places vehicles at city level, not at a venue;
+                // regNo matches the plate the Driver App derives for this id, so both show one number.
+                { id: 'VH-2212', type: 'Minibus', model: 'Force Traveller', capacity: 20, regNo: 'UP-03-EF-2212', status: 'Active', baseLocation: 'New Delhi', lastRefuelDate: '2026-08-10' },
                 // Deliberate proximity-guard demo vehicle - based in Shillong, paired against DRV-016
                 // (Guwahati) below. Same vendor, license-compatible, both idle - old code would have
                 // auto-paired these two on the next Auto-Assign despite the ~100 km gap between their
@@ -257,6 +263,11 @@ window.INITIAL_DATA = {
         // fix, that alone was enough to get auto-paired regardless of how far apart the two actually
         // are. See window.idleDriverForVehicle and Module Settings' Auto-Assign Distance Limit.
         { id: 'DRV-016', name: 'Bimal Boro', vehicleId: null, vendor: 'SwiftRide Logistics', licenseId: 'AS0120230789456', licenseClass: 'LMV-TR', phone: '+91 87654 33221', licenseExpiry: '2029-01-10', costPerHour: 130, licenseFile: null, photo: null, status: 'Active', baseLocation: 'Guwahati' },
+        // Drives VH-2212, the On-Call minibus stationed at Athletes Village. Same person, id and phone
+        // as the Driver and Stakeholder apps' own copies, which is what lets a nudge an admin sends
+        // him from the On-Call tab reach his actual Driver App session. HMV/HPMV/HTV because a
+        // minibus needs a heavy passenger licence (section 10's licence table).
+        { id: 'DRV-017', name: 'Rohit Bansal', vehicleId: 'VH-2212', vendor: 'SwiftRide Logistics', licenseId: 'DL0120240890123', licenseClass: 'HMV/HPMV/HTV', phone: '+91 90011 22334', licenseExpiry: '2029-05-20', costPerHour: 145, licenseFile: null, photo: null, status: 'Active', baseLocation: 'New Delhi' },
     ],
 
     // Every vehicle-side inspection uses the one consolidated type the system actually generates
@@ -9242,7 +9253,7 @@ window.RoutePlansTab = ({ data, setData }) => {
         }));
         window.publishRoutePlanToBridge({
             id: plan.id, route: plan.route, date: plan.date, time: plan.time,
-            vehicleId: vehicle.id, vehicleType: `${vehicle.type} (${vehicle.capacity})`,
+            vehicleId: vehicle.id, regNo: vehicle.regNo || null, vehicleType: `${vehicle.type} (${vehicle.capacity})`,
             driverName: driver ? driver.name : null, vendorName: vehicle.vendorName,
             stakeholder: plan.stakeholder, manualPlanId: plan.manualPlanId || null,
             passengers: plan.passengers, publishedAt: Date.now(),
@@ -9272,7 +9283,7 @@ window.RoutePlansTab = ({ data, setData }) => {
             const driver = driverOf(plan.vehicle);
             window.publishRoutePlanToBridge({
                 id: plan.id, route: plan.route, date: plan.date, time: plan.time,
-                vehicleId: vehicle.id, vehicleType: `${vehicle.type} (${vehicle.capacity})`,
+                vehicleId: vehicle.id, regNo: vehicle.regNo || null, vehicleType: `${vehicle.type} (${vehicle.capacity})`,
                 driverName: driver ? driver.name : null, vendorName: vehicle.vendorName,
                 stakeholder: plan.stakeholder, manualPlanId: plan.manualPlanId || null,
                 passengers: plan.passengers, publishedAt: Date.now(),
@@ -14225,6 +14236,7 @@ function App() {
                 const updatedRequest = {
                     ...request, status: 'Assigned', assignedAt,
                     assignedDriverId: mine.driverId, assignedDriverName: mine.driverName,
+                    assignedDriverPhone: mine.driverPhone || null,
                     assignedVehicleId: mine.vehicleId, assignedVehicleType: mine.vehicleType, assignedVendorName: mine.vendorName,
                     // The real pickup ETA sendOnCallNudge computed (window.driverPickupEta) at the
                     // moment this driver was nudged - carried through so the Stakeholder App's own
@@ -14251,6 +14263,11 @@ function App() {
         const eta = window.driverPickupEta(driver, request.origin, data);
         const nudge = {
             id: uid('NDG'), requestId: request.id, driverId: driver.id, driverName: driver.name,
+            // Same contact exchange the Stakeholder App's own automatic nudges carry: the driver sees the
+            // passenger's name on the offer and their number once accepted; the driver's number goes back
+            // to the stakeholder through settleAdminNudges below.
+            driverPhone: driver.phone || null,
+            stakeholderName: request.stakeholderName, stakeholderPhone: request.stakeholderPhone || null,
             vehicleId: vehicle.id, vehicleType: `${vehicle.type} (${vehicle.capacity})`, vendorName: vehicle.vendorName,
             origin: request.origin, destination: request.destination, route: request.route, passengers: request.passengers,
             sentAt: Date.now(), expiresAt: Date.now() + (data.settings?.oncallNudgeWindowSec ?? 40) * 1000,

@@ -144,7 +144,7 @@ const STAKEHOLDER_APP_DATA = {
         { id: 'DRV-010', name: 'Alok Nath', vehicleId: 'VH-9201', phone: '+91 93210 77889' },
         { id: 'DRV-005', name: 'Priya Sharma', vehicleId: 'VH-2210', phone: '+91 99887 22334' },
         { id: 'DRV-009', name: 'Farhan Sheikh', vehicleId: 'VH-9601', phone: '+91 94321 66778' },
-        { id: 'DRV-015', name: 'Rohit Bansal', vehicleId: 'VH-2212', phone: '+91 90011 22334' },
+        { id: 'DRV-017', name: 'Rohit Bansal', vehicleId: 'VH-2212', phone: '+91 90011 22334' },
     ],
 };
 
@@ -262,6 +262,13 @@ const sendNudgeToDriver = (request, candidate, nudgeWindowSec) => {
         vehicleId: candidate.vehicle.id, vehicleType: `${candidate.vehicle.type} (${candidate.vehicle.capacity})`,
         vendorName: candidate.vehicle.vendorName, origin: request.origin, destination: request.destination,
         route: request.route, passengers: request.passengers,
+        // Who the driver would be picking up. The Driver App shows only the name while this is still an
+        // offer; the phone number is revealed on the trip once the driver has accepted it, so a driver
+        // who declines never ends up holding a passenger's number.
+        stakeholderName: request.stakeholderName, stakeholderPhone: request.stakeholderPhone || null,
+        // The same driver-buffer ETA this app will promise the stakeholder (includes any time left on a
+        // trip the driver is finishing), so both apps count down to the same pickup time.
+        pickupEtaMin: candidatePickupEta(candidate, request.origin).etaMin,
         sentAt: Date.now(), expiresAt: Date.now() + nudgeWindowSec * 1000, status: 'Pending', initiatedBy: 'stakeholder',
         // "Why this driver" - shown as-is on the Driver App's own nudge modal (see OnCallNudgeModal
         // there), not re-derived: their vehicle type is one of the requesting stakeholder type's
@@ -300,6 +307,53 @@ const ROUTE_PLAN_PUBLISH_STORAGE_KEY = 'kheloTechPublishedRoutePlans';
 // set on every change, so for any shuttle id it contains, the bridge copy is the current truth -
 // including a pause, or a vehicle taken off the loop. Before the admin panel has ever written it
 // (null), this app falls back to its own seed rather than showing no shuttles at all.
+// Number plates by fleet record id, mirroring each vehicle's regNo in the admin panel's inventory
+// (ACT Travel Prototype.html). A stakeholder never sees the internal VH-#### id - that exists only for
+// fleet records on the admin side - they see the plate they can actually read off the vehicle at the
+// kerb. A published Route Plan carries its own regNo on the bridge record, which wins over this table,
+// so a vehicle added in the admin panel after this snapshot still shows its real plate.
+const VEHICLE_REG_NUMBERS = {
+    'VH-4401': 'DL-01-AB-4401',
+    'VH-4402': 'DL-01-AB-4402',
+    'VH-4403': 'DL-01-AB-4403',
+    'VH-2210': 'DL-01-CD-2210',
+    'VH-2211': 'DL-01-CD-2211',
+    'VH-2212': 'UP-03-EF-2212',
+    'VH-3301': 'DL-01-EF-3301',
+    'VH-1301': 'DL-01-GH-1301',
+    'VH-1302': 'DL-01-GH-1302',
+    'VH-1092': 'HR-26-EF-1092',
+    'VH-1093': 'HR-26-EF-1093',
+    'VH-3320': 'HR-26-EF-3320',
+    'VH-3321': 'HR-26-EF-3321',
+    'VH-2501': 'HR-26-GH-2501',
+    'VH-2502': 'HR-26-GH-2502',
+    'VH-4501': 'HR-26-JK-4501',
+    'VH-5501': 'UP-14-GH-5501',
+    'VH-5502': 'UP-14-GH-5502',
+    'VH-5503': 'UP-14-GH-5503',
+    'VH-6001': 'UP-14-JK-6001',
+    'VH-6002': 'UP-14-JK-6002',
+    'VH-7001': 'UP-14-LM-7001',
+    'VH-7002': 'UP-14-LM-7002',
+    'VH-8001': 'UP-14-NP-8001',
+    'VH-8002': 'UP-14-NP-8002',
+    'VH-9001': 'DL-08-QR-9001',
+    'VH-9002': 'DL-08-QR-9002',
+    'VH-9101': 'DL-08-ST-9101',
+    'VH-9201': 'DL-08-UV-9201',
+    'VH-9301': 'DL-08-WX-9301',
+    'VH-9302': 'DL-08-WX-9302',
+    'VH-9501': 'HR-51-YZ-9501',
+    'VH-9502': 'HR-51-YZ-9502',
+    'VH-9601': 'HR-51-AB-9601',
+    'VH-9602': 'HR-51-AB-9602',
+    'VH-9701': 'HR-51-CD-9701',
+    'VH-9801': 'HR-51-EF-9801',
+    'VH-9802': 'HR-51-EF-9802',
+};
+const plateOf = (trip) => trip.regNo || VEHICLE_REG_NUMBERS[trip.vehicleId] || 'Plate not on file';
+
 const SHUTTLE_PUBLISH_STORAGE_KEY = 'kheloTechPublishedShuttlePlans';
 const readPublishedShuttles = () => {
     try { return JSON.parse(localStorage.getItem(SHUTTLE_PUBLISH_STORAGE_KEY) || 'null'); } catch (e) { return null; }
@@ -423,6 +477,10 @@ const buildOnCallCandidateQueue = (originName, headcount, stakeholderType, vehic
 // ACT Travel Prototype.html's window.mergeOnCallRequests, which destructures exactly these fields).
 const toOnCallBridgeRecord = (request) => ({
     id: request.id, stakeholderName: request.stakeholderName, stakeholderType: request.stakeholderType,
+    // Both contact numbers ride along on the request record, so whichever side resolves the ride -
+    // this app's own matching, or an admin's manual assignment - can hand each party the other's
+    // number. See finalizeOnCallAssignment and the admin panel's sendOnCallNudge/settleAdminNudges.
+    stakeholderPhone: request.stakeholderPhone || null, assignedDriverPhone: request.driverPhone || null,
     origin: request.origin, destination: request.destination, route: request.route, passengers: request.passengers,
     requestedVehicleTypes: request.requestedVehicleTypes, status: request.status, requestedAt: request.requestedAt,
     currentNudge: request.currentNudgeId ? { driverId: request.currentNudgeDriverId, driverName: request.currentNudgeDriverName } : null,
@@ -453,6 +511,9 @@ const finalizeOnCallAssignment = (request, liveNudge) => {
     const updated = {
         ...request, status: 'Assigned', assignedAt: Date.now(), assignedDriverId: liveNudge.driverId,
         vehicleId: liveNudge.vehicleId, vehicleType: liveNudge.vehicleType, driverName: liveNudge.driverName, vendorName: liveNudge.vendorName,
+        // Only now, once a driver has actually accepted, does the stakeholder get a number to call -
+        // never while candidates are merely being nudged.
+        driverPhone: liveNudge.driverPhone || candidate?.driver.phone || null,
         pickupEtaMin: (eta && eta.etaKnown) ? eta.etaMin : (candidate?.pickupEtaMin ?? 10), startedAt: null, estimatedDurationMin: null, currentNudgeId: null,
     };
     upsertOnCallRequest(toOnCallBridgeRecord(updated));
@@ -469,7 +530,7 @@ const simulateMatchOnCallRequest = (request) => {
     const candidate = request.candidateQueue.find(c => c.driver.id === request.currentNudgeDriverId) || request.candidateQueue[0];
     if (!candidate) return request;
     const liveNudge = {
-        driverId: candidate.driver.id, driverName: candidate.driver.name,
+        driverId: candidate.driver.id, driverName: candidate.driver.name, driverPhone: candidate.driver.phone,
         vehicleId: candidate.vehicle.id, vehicleType: `${candidate.vehicle.type} (${candidate.vehicle.capacity})`,
         vendorName: candidate.vehicle.vendorName,
     };
@@ -528,6 +589,7 @@ const tickOnCallOrchestration = (request, settings) => {
         return {
             ...request, status: 'Assigned', assignedAt: bridgeRecord.assignedAt || Date.now(),
             assignedDriverId: bridgeRecord.assignedDriverId, driverName: bridgeRecord.assignedDriverName,
+            driverPhone: bridgeRecord.assignedDriverPhone || null,
             vehicleId: bridgeRecord.assignedVehicleId, vehicleType: bridgeRecord.assignedVehicleType, vendorName: bridgeRecord.assignedVendorName,
             pickupEtaMin: bridgeRecord.pickupEtaMin ?? 10, startedAt: null, estimatedDurationMin: null, currentNudgeId: null,
         };
@@ -605,9 +667,24 @@ function Icon({ name, size = 18, className = '' }) {
     );
 }
 
+// The other party's number on an assigned trip, as a tap-to-call link rather than plain text - a
+// stakeholder waiting at a pickup point needs to reach the driver in one tap, not copy a number
+// across. Renders nothing when no number is on file (a scheduled Route Plan published before this
+// existed, for instance), rather than an empty or broken button.
+function CallButton({ phone, label }) {
+    if (!phone) return null;
+    return (
+        <a href={`tel:${phone.replace(/[^\d+]/g, '')}`}
+            className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-full pl-2 pr-2.5 py-1 transition shrink-0"
+            aria-label={`${label}, ${phone}`}>
+            <Icon name="phone" size={12} />{phone}
+        </a>
+    );
+}
+
 function Badge({ status }) {
     const classes = {
-        'On the way': 'bg-emerald-100 text-emerald-700', Assigned: 'bg-blue-100 text-blue-700', Matched: 'bg-blue-100 text-blue-700', Scheduled: 'bg-slate-100 text-slate-600',
+        'On the way': 'bg-emerald-100 text-emerald-700', Assigned: 'bg-blue-100 text-blue-700', Matched: 'bg-blue-100 text-blue-700', Arriving: 'bg-indigo-100 text-indigo-700', Scheduled: 'bg-slate-100 text-slate-600',
         Searching: 'bg-amber-100 text-amber-700', Escalated: 'bg-violet-100 text-violet-700', Cancelled: 'bg-slate-100 text-slate-400',
         Completed: 'bg-teal-100 text-teal-700', Active: 'bg-emerald-100 text-emerald-700',
     };
@@ -934,6 +1011,83 @@ function SosModal({ open, onClose, onSubmit }) {
    HomeOngoingHero; not-yet-started shows a static two-pin map (RouteMap with no `progress`, which it
    already supports) plus the same vehicle/driver/vendor facts and an inline Simulate action, so
    opening a pending trip's card is a real detail view, not just the same compact summary again. */
+// When an on-call driver should reach the pickup: counted from the moment they accepted (the ETA was
+// computed then), falling back to the request time for records from before assignedAt existed.
+const onCallPickupAt = (trip) => {
+    const from = trip.assignedAt || trip.requestedAt;
+    return from && trip.pickupEtaMin != null ? from + trip.pickupEtaMin * 60000 : null;
+};
+const initialsOf = (name) => (name || '?').split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join('');
+
+/* "Your driver is on the way" - what an accepted on-call ride shows before pickup. Leads with who is
+   coming and how to reach them, then a live countdown to the pickup. If the driver accepted while
+   still finishing another drop-off (allowed within the near-end threshold), it says so, using the
+   Driver App's own live availability broadcast, so the stakeholder knows why the countdown is longer
+   than the distance alone suggests. That note clears on its own once the driver's drop-off is done. */
+function DriverArrivingCard({ trip }) {
+    const [now, setNow] = useState(Date.now());
+    useEffect(() => {
+        const t = setInterval(() => setNow(Date.now()), 15000);
+        return () => clearInterval(t);
+    }, []);
+    const pickupAt = onCallPickupAt(trip);
+    const minsLeft = pickupAt ? Math.max(0, Math.round((pickupAt - now) / 60000)) : null;
+    const vehicle = STAKEHOLDER_APP_DATA.fleet.find(v => v.id === trip.vehicleId);
+    const finishing = trip.assignedDriverId ? driverAvailability(trip.assignedDriverId) : { busyUntil: null };
+    const finishingMin = finishing.busyUntil ? Math.max(0, Math.round((finishing.busyUntil - now) / 60000)) : null;
+    return (
+        <div className="bg-white rounded-2xl border border-indigo-200 shadow-card overflow-hidden">
+            <div className="bg-gradient-to-r from-indigo-600 to-brandAccent px-4 py-3 text-white flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-white/75 flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />Your driver is on the way
+                    </p>
+                    <p className="text-lg font-bold leading-tight mt-0.5">
+                        {minsLeft == null ? 'Arriving soon' : minsLeft === 0 ? 'Arriving now' : `Arriving in ~${minsLeft} min`}
+                    </p>
+                </div>
+                {pickupAt && (
+                    <div className="text-right shrink-0">
+                        <p className="text-[10px] uppercase tracking-wide text-white/75">Pickup by</p>
+                        <p className="text-lg font-bold leading-tight">{formatClock(pickupAt)}</p>
+                    </div>
+                )}
+            </div>
+            <div className="p-4 space-y-3">
+                <div className="flex items-center gap-3">
+                    <span className="w-11 h-11 rounded-full bg-gradient-to-br from-indigo-500 to-brandAccent text-white font-bold text-sm flex items-center justify-center shrink-0">
+                        {initialsOf(trip.driverName)}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                        <p className="font-semibold text-slate-800 truncate">{trip.driverName || 'Driver assigned'}</p>
+                        <span className="inline-block mt-1 font-mono text-[11px] font-bold tracking-wider text-slate-800 bg-amber-50 border border-slate-300 rounded px-1.5 py-0.5">{plateOf(trip)}</span>
+                        <p className="text-xs text-slate-500 truncate">
+                            {[vehicle?.model, trip.vehicleType].filter(Boolean).join(' · ')}
+                        </p>
+                        {trip.vendorName && <p className="text-[11px] text-slate-400 truncate">{trip.vendorName}</p>}
+                    </div>
+                </div>
+                <div className="flex items-center justify-between gap-2 pt-3 border-t border-slate-100">
+                    <p className="text-xs text-slate-500 min-w-0">
+                        Meet them at <span className="font-semibold text-slate-700">{trip.origin || 'your pickup point'}</span>
+                    </p>
+                    <CallButton phone={trip.driverPhone} label="Call driver" />
+                </div>
+                {finishingMin != null && (
+                    <div className="bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 flex gap-2">
+                        <Icon name="clock" size={14} className="text-amber-600 shrink-0 mt-0.5" />
+                        <p className="text-xs text-amber-800">
+                            {trip.driverName ? trip.driverName.split(' ')[0] : 'Your driver'} is finishing a drop-off
+                            {finishing.dropLocation ? ` at ${finishing.dropLocation}` : ''}
+                            {finishingMin > 0 ? ` (about ${finishingMin} min left)` : ''} and heads to you straight after. This is already included in the time above.
+                        </p>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+}
+
 function TripDetailView({ trip, onOpenSos, onResolveSos, onCancelOnCallRequest, onSimulateMatch }) {
     // A Searching/Escalated on-call request has no vehicle/driver/map yet - a completely different,
     // much thinner view than a real trip's (started or not), reusing the exact same searching card
@@ -955,7 +1109,7 @@ function TripDetailView({ trip, onOpenSos, onResolveSos, onCancelOnCallRequest, 
             <div className="relative">
                 <RouteMap route={trip.route} progress={started ? derivedProgress(trip) : null} heightClass="h-56" />
                 <div className="absolute top-3 left-3 z-[500]">
-                    <Badge status={started ? 'On the way' : trip.kind === 'oncall' ? 'Matched' : 'Scheduled'} />
+                    <Badge status={started ? 'On the way' : trip.kind === 'oncall' ? 'Arriving' : 'Scheduled'} />
                 </div>
             </div>
             <div className="-mt-5 relative z-[400] bg-bgLight rounded-t-3xl px-4 pt-5 pb-5 space-y-4">
@@ -968,7 +1122,9 @@ function TripDetailView({ trip, onOpenSos, onResolveSos, onCancelOnCallRequest, 
                     </div>
                 )}
 
-                {started ? (
+                {!started && trip.kind === 'oncall' ? (
+                    <DriverArrivingCard trip={trip} />
+                ) : started ? (
                     <div className="bg-white rounded-2xl border border-slate-200 shadow-card p-4">
                         <div className="flex items-start justify-between gap-3">
                             <div>
@@ -994,7 +1150,7 @@ function TripDetailView({ trip, onOpenSos, onResolveSos, onCancelOnCallRequest, 
                             // its own pickup time is derived (requestedAt + pickupEtaMin) rather than
                             // stored, same information, computed instead of typed in.
                             const pickup = trip.kind === 'oncall'
-                                ? (trip.requestedAt ? formatClock(trip.requestedAt + trip.pickupEtaMin * 60000) : null)
+                                ? (onCallPickupAt(trip) ? formatClock(onCallPickupAt(trip)) : null)
                                 : (trip.time || null);
                             const arrival = pickup && est ? addMinutesToTime(pickup, est.durationMin) : null;
                             if (!pickup) {
@@ -1028,7 +1184,7 @@ function TripDetailView({ trip, onOpenSos, onResolveSos, onCancelOnCallRequest, 
                 <div className="bg-white rounded-2xl border border-slate-200 shadow-card p-4 grid grid-cols-2 gap-4 text-sm">
                     <div>
                         <p className="flex items-center gap-1 text-[10px] text-slate-400 uppercase tracking-wide"><Icon name="truck" size={11} />Vehicle</p>
-                        <p className="font-medium text-slate-800 mt-0.5">{trip.vehicleId}</p>
+                        <p className="font-medium text-slate-800 mt-0.5 font-mono tracking-wide">{plateOf(trip)}</p>
                         <p className="text-xs text-slate-500">{trip.vehicleType}</p>
                     </div>
                     <div>
@@ -1037,7 +1193,10 @@ function TripDetailView({ trip, onOpenSos, onResolveSos, onCancelOnCallRequest, 
                     </div>
                     <div className="col-span-2 pt-3 border-t border-slate-100">
                         <p className="flex items-center gap-1 text-[10px] text-slate-400 uppercase tracking-wide"><Icon name="users" size={11} />Driver</p>
-                        <p className="font-medium text-slate-800 mt-0.5">{trip.driverName}</p>
+                        <div className="flex items-center justify-between gap-2 mt-0.5">
+                            <p className="font-medium text-slate-800">{trip.driverName}</p>
+                            <CallButton phone={trip.driverPhone} label="Call driver" />
+                        </div>
                     </div>
                     {est && (
                         <div className="col-span-2 pt-3 border-t border-slate-100 flex items-center gap-1.5 text-xs text-slate-500">
@@ -1160,11 +1319,14 @@ function TripSummaryCard({ trip, onClick }) {
     // Same derived-vs-stored pickup time TripDetailView uses - a Route trip's is fixed (trip.time),
     // an On-Call trip's is computed from when it was requested.
     const pickupTime = trip.kind === 'oncall'
-        ? (trip.requestedAt ? formatClock(trip.requestedAt + trip.pickupEtaMin * 60000) : null)
+        ? (onCallPickupAt(trip) ? formatClock(onCallPickupAt(trip)) : null)
         : trip.time;
+    // A container rather than one big button, so the driver's tap-to-call link can sit on the card
+    // itself - a link nested inside a button is invalid HTML and would also open the trip on every tap.
+    // The tappable body still opens the trip exactly as before.
     return (
-        <button type="button" onClick={onClick}
-            className="w-full text-left bg-white rounded-2xl border border-slate-200 shadow-sm p-4 hover:border-brandAccent transition">
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm hover:border-brandAccent transition">
+        <button type="button" onClick={onClick} className="w-full text-left p-4">
             <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                     <p className="font-semibold text-slate-800 text-sm">{trip.route}</p>
@@ -1175,19 +1337,26 @@ function TripSummaryCard({ trip, onClick }) {
                         </p>
                     )}
                 </div>
-                <Badge status={trip.startedAt ? 'On the way' : trip.kind === 'oncall' ? 'Matched' : 'Scheduled'} />
+                <Badge status={trip.startedAt ? 'On the way' : trip.kind === 'oncall' ? 'Arriving' : 'Scheduled'} />
             </div>
             <div className="mt-3 pt-3 border-t border-slate-100 flex items-center gap-3">
                 <span className="w-9 h-9 rounded-lg bg-blue-50 text-brandAccent flex items-center justify-center shrink-0">
                     <Icon name="car" size={16} />
                 </span>
                 <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium text-slate-700 truncate">{trip.vehicleType} &middot; {trip.vehicleId}</p>
+                    <p className="text-sm font-medium text-slate-700 truncate">{trip.vehicleType} &middot; {plateOf(trip)}</p>
                     <p className="text-xs text-slate-400 truncate">Driver: {trip.driverName} &middot; {trip.vendorName}</p>
                 </div>
                 <Icon name="back" size={14} className="text-slate-300 shrink-0 rotate-180" />
             </div>
         </button>
+        {trip.driverPhone && (
+            <div className="px-4 pb-3 flex items-center justify-between gap-2">
+                <p className="text-[11px] text-slate-400">Need to reach your driver?</p>
+                <CallButton phone={trip.driverPhone} label={`Call ${trip.driverName || 'driver'}`} />
+            </div>
+        )}
+        </div>
     );
 }
 
@@ -1198,7 +1367,7 @@ function tripDisplayStatus(trip) {
     if (trip.kind === 'oncall' && (trip.status === 'Searching' || trip.status === 'Escalated' || trip.status === 'Cancelled')) return trip.status;
     if (trip.completedAt) return 'Completed';
     if (trip.startedAt) return 'On the way';
-    return trip.kind === 'oncall' ? 'Matched' : 'Scheduled';
+    return trip.kind === 'oncall' ? 'Arriving' : 'Scheduled';
 }
 
 /* ------------------------------------------------------------------ */
@@ -1243,7 +1412,7 @@ function MyTripCard({ trip, expanded, onToggle }) {
     const status = tripDisplayStatus(trip);
     const isOnCall = trip.kind === 'oncall';
     const pickupTime = isOnCall
-        ? (trip.requestedAt ? formatClock(trip.requestedAt + (trip.pickupEtaMin || 0) * 60000) : null)
+        ? (onCallPickupAt(trip) ? formatClock(onCallPickupAt(trip)) : null)
         : trip.time;
     const est = tripEstimate(trip.route);
     const hasAssignedFacts = trip.vehicleId && status !== 'Searching' && status !== 'Escalated' && status !== 'Cancelled';
@@ -1281,7 +1450,7 @@ function MyTripCard({ trip, expanded, onToggle }) {
                         <div className="grid grid-cols-2 gap-3 text-sm">
                             <div>
                                 <p className="flex items-center gap-1 text-[10px] text-slate-400 uppercase tracking-wide"><Icon name="truck" size={11} />Vehicle</p>
-                                <p className="font-medium text-slate-800 mt-0.5">{trip.vehicleId}</p>
+                                <p className="font-medium text-slate-800 mt-0.5 font-mono tracking-wide">{plateOf(trip)}</p>
                                 <p className="text-xs text-slate-500">{trip.vehicleType}</p>
                             </div>
                             <div>
@@ -1290,7 +1459,10 @@ function MyTripCard({ trip, expanded, onToggle }) {
                             </div>
                             <div className="col-span-2">
                                 <p className="flex items-center gap-1 text-[10px] text-slate-400 uppercase tracking-wide"><Icon name="users" size={11} />Driver</p>
-                                <p className="font-medium text-slate-800 mt-0.5">{trip.driverName}</p>
+                                <div className="flex items-center justify-between gap-2 mt-0.5">
+                                    <p className="font-medium text-slate-800">{trip.driverName}</p>
+                                    <CallButton phone={trip.driverPhone} label="Call driver" />
+                                </div>
                             </div>
                             {est && (
                                 <div className="col-span-2 pt-2 border-t border-slate-100 flex items-center gap-1.5 text-xs text-slate-500">
@@ -1729,26 +1901,37 @@ function App() {
     const ONCALL_ENABLED_TYPES_STORAGE_KEY = 'kheloTechOncallEnabledStakeholderTypes';
     const STAKEHOLDER_VEHICLE_MAP_STORAGE_KEY = 'kheloTechStakeholderVehicleMap';
     useEffect(() => {
+        // null when the admin panel has never written this setting, NOT 0. Number(null) is 0, and
+        // several of these settings legitimately accept 0, so reading a missing key straight through
+        // Number() used to turn "never configured" into "configured to zero": the search timeout
+        // became 0 minutes and every On-Call request escalated on its first tick, before a single
+        // driver was nudged. A missing or unparseable value now leaves the built-in default alone.
+        const readStoredNumber = (key) => {
+            const raw = localStorage.getItem(key);
+            if (raw === null || raw.trim() === '') return null;
+            const n = Number(raw);
+            return Number.isFinite(n) ? n : null;
+        };
         const sync = () => {
             try {
-                const w = Number(localStorage.getItem(ONCALL_NUDGE_WINDOW_STORAGE_KEY));
-                if (Number.isFinite(w) && w > 0) setOncallNudgeWindowSec(w);
+                const w = readStoredNumber(ONCALL_NUDGE_WINDOW_STORAGE_KEY);
+                if (w !== null && w > 0) setOncallNudgeWindowSec(w);
             } catch (e) { /* storage unavailable - stays on the built-in default */ }
             try {
-                const t = Number(localStorage.getItem(ONCALL_SEARCH_TIMEOUT_STORAGE_KEY));
-                if (Number.isFinite(t) && t >= 0) setOncallSearchTimeoutMin(t);
+                const t = readStoredNumber(ONCALL_SEARCH_TIMEOUT_STORAGE_KEY);
+                if (t !== null && t >= 0) setOncallSearchTimeoutMin(t);
             } catch (e) { /* storage unavailable - stays on the built-in default */ }
             try {
-                const ts = Number(localStorage.getItem(ONCALL_SEARCH_TIMEOUT_SEC_STORAGE_KEY));
-                if (Number.isFinite(ts) && ts >= 0) setOncallSearchTimeoutSec(ts);
+                const ts = readStoredNumber(ONCALL_SEARCH_TIMEOUT_SEC_STORAGE_KEY);
+                if (ts !== null && ts >= 0) setOncallSearchTimeoutSec(ts);
             } catch (e) { /* storage unavailable - stays on the built-in default */ }
             try {
-                const n = Number(localStorage.getItem(ONCALL_NEAR_END_THRESHOLD_STORAGE_KEY));
-                if (Number.isFinite(n) && n >= 0) setOncallNearEndThresholdMin(n);
+                const n = readStoredNumber(ONCALL_NEAR_END_THRESHOLD_STORAGE_KEY);
+                if (n !== null && n >= 0) setOncallNearEndThresholdMin(n);
             } catch (e) { /* storage unavailable - stays on the built-in default */ }
             try {
-                const p = Number(localStorage.getItem(ONCALL_MAX_PROXIMITY_STORAGE_KEY));
-                if (Number.isFinite(p) && p > 0) setOncallMaxProximityKm(p);
+                const p = readStoredNumber(ONCALL_MAX_PROXIMITY_STORAGE_KEY);
+                if (p !== null && p > 0) setOncallMaxProximityKm(p);
             } catch (e) { /* storage unavailable - stays on the built-in default */ }
             try {
                 const raw = localStorage.getItem(STAKEHOLDER_VEHICLE_MAP_STORAGE_KEY);
@@ -1829,7 +2012,7 @@ function App() {
                 const idx = next.findIndex(t => t.id === r.id);
                 const shaped = {
                     id: r.id, kind: 'route', route: r.route, date: r.date, time: r.time || '', status: 'Assigned',
-                    vehicleId: r.vehicleId, vehicleType: r.vehicleType, driverName: r.driverName, vendorName: r.vendorName,
+                    vehicleId: r.vehicleId, regNo: r.regNo || null, vehicleType: r.vehicleType, driverName: r.driverName, vendorName: r.vendorName,
                     manualPlanId: r.manualPlanId, publishedAt: r.publishedAt,
                 };
                 if (idx === -1) {
@@ -1864,14 +2047,18 @@ function App() {
     );
     const allMyTrips = [...myRouteTrips, ...onCallTrips];
 
-    // Current = an already-started, not-yet-ended trip if one exists, else the most recently created
-    // pending one (on-call requests are unshifted onto the front of onCallTrips, so the first pending
-    // one found is naturally the newest) - everything else just lists underneath as "other" pending
-    // trips. A trip that's been ended (simulateEnd's own completedAt) drops out of both - it's done,
-    // it stops being "current" and stops cluttering "other trips" too, same as a real completed ride
-    // wouldn't still show up as something still to do.
+    // Current = an already-started, not-yet-ended trip if one exists; otherwise a live On-Call ride
+    // (searching, escalated, or matched and on its way), newest first; otherwise the next scheduled
+    // trip. On-Call leads over a scheduled trip because it is, by definition, something happening
+    // now - someone standing at a pickup point waiting for a driver needs that ride and its call
+    // button in front of them, not tomorrow's scheduled transfer. The old ordering listed scheduled
+    // trips first, so a matched on-call ride was pushed down into "other trips" whenever the person
+    // also had anything scheduled. A trip that's been ended (simulateEnd's own completedAt) drops out
+    // of both - it's done, and stops cluttering "other trips" the way a real completed ride would.
     const started = allMyTrips.find(t => t.startedAt && !t.completedAt);
-    const pending = allMyTrips.filter(t => !t.startedAt && !t.completedAt);
+    const isLiveOnCall = t => t.kind === 'oncall' && ['Searching', 'Escalated', 'Assigned'].includes(t.status);
+    const notYetStarted = allMyTrips.filter(t => !t.startedAt && !t.completedAt);
+    const pending = [...notYetStarted.filter(isLiveOnCall), ...notYetStarted.filter(t => !isLiveOnCall(t))];
     const currentTrip = started || pending[0] || null;
     const otherTrips = pending.filter(t => t !== currentTrip);
     const selectedTrip = selectedTripId ? allMyTrips.find(t => t.id === selectedTripId) || null : null;
@@ -1926,7 +2113,7 @@ function App() {
         const requestedAt = Date.now();
         const base = {
             id: uid('OC'), kind: 'oncall', status: 'Searching', origin, destination, route: `${origin} -> ${destination}`,
-            passengers, stakeholderType: person.stakeholderType, stakeholderName: person.name,
+            passengers, stakeholderType: person.stakeholderType, stakeholderName: person.name, stakeholderPhone: person.phone,
             requestedVehicleTypes, requestedAt, candidateQueue, candidateIndex: 0,
             currentNudgeId: null, currentNudgeDriverId: null, currentNudgeDriverName: null, nudgeLog: [],
             startedAt: null, estimatedDurationMin: null,
