@@ -539,7 +539,11 @@ window.INITIAL_DATA = {
             // is deliberately linked to TP-001 below (which already has a live, ongoing assignment,
             // ASN-009) so ACT Stakeholder Prototype.html's My Trips screen has a real in-progress trip
             // to show the moment this phone number logs in, not just an empty state.
-            people: [{ id: 'ATOM-10234', firstName: 'Jack', lastName: 'Sullivan', stakeholderType: 'Athletes', atomVerified: true, phone: '+91 90000 11111' }],
+            people: [{ id: 'ATOM-10234', firstName: 'Jack', lastName: 'Sullivan', stakeholderType: 'Athletes', atomVerified: true, phone: '+91 90000 11111', pnr: 'PNR7X92K1' }],
+            // One travel plan = one journey, with every booking on it (see window.planPnrGroups). The
+            // other Karnataka bookings on this same flight (PNR7X92K2-K4, window.MOCK_PNR_BOOKINGS) are
+            // left for the demo to add through Create Travel Plan, which offers to merge them in here.
+            pnrs: [{ pnr: 'PNR7X92K1', memberIds: ['ATOM-10234'] }],
             createdAt: '2026-08-24', linkedRouteIds: ['TP-001'],
         },
         {
@@ -1393,9 +1397,41 @@ window.mockTransportStatus = (mode, transportNumber, pnrNumber, nonce = 0) => {
 // (window.TravelPlansTab's own pnrApplicable). Location always resolves to one of this project's two
 // real transport hubs (window.LOCATION_REGISTRY) so the fetched value is guaranteed usable by
 // window.routeForDemand downstream, never a made-up address that can't actually be routed to.
-window.mockPnrLookup = (mode, pnrNumber) => {
+// Known bookings the mock lookup answers from before falling back to its hash-derived result. A real
+// PNR API resolves every booking to the flight or train it is actually on; a hash can't make two
+// different PNRs land on the same flight, so without this the "one group, several PNRs, same flight"
+// case could never be demonstrated. The seeded travel plans' own PNRs are here too, so re-verifying
+// them agrees with what the plans already say. PNR7X92K1-K4 are one Karnataka Athletics group booked
+// across four PNRs on 6E-2341 (PNR7X92M1 is on a different flight); K4 carries `rebookedTo`, what a later re-check returns once that one
+// booking has been moved to another flight (see the Travel Plan Details "Re-check bookings" action).
+window.MOCK_PNR_BOOKINGS = {
+    PNR7X92K1: { mode: 'Flight', transportNumber: '6E-2341', date: '26/08/2026', time: '14:30', location: 'IGI Airport - Terminal 3' },
+    PNR7X92K2: { mode: 'Flight', transportNumber: '6E-2341', date: '26/08/2026', time: '14:30', location: 'IGI Airport - Terminal 3' },
+    PNR7X92K3: { mode: 'Flight', transportNumber: '6E-2341', date: '26/08/2026', time: '14:30', location: 'IGI Airport - Terminal 3' },
+    PNR7X92K4: { mode: 'Flight', transportNumber: '6E-2341', date: '26/08/2026', time: '14:30', location: 'IGI Airport - Terminal 3',
+        rebookedTo: { transportNumber: '6E-2345', date: '27/08/2026', time: '09:10', location: 'IGI Airport - Terminal 3' } },
+    // A second demo pair: PNRDEMO01 keeps exactly what the hash fallback already resolved it to, and
+    // PNRDEMO02 is another booking on that same flight, so the two verify onto one travel plan.
+    PNRDEMO01: { mode: 'Flight', transportNumber: '6E-488', date: '19/08/2026', time: '15:16', location: 'IGI Airport - Terminal 3' },
+    PNRDEMO02: { mode: 'Flight', transportNumber: '6E-488', date: '19/08/2026', time: '15:16', location: 'IGI Airport - Terminal 3' },
+    // Another Karnataka booking, but on a different flight - adding it to the 6E-2341 group is refused.
+    PNR7X92M1: { mode: 'Flight', transportNumber: 'AI-806', date: '26/08/2026', time: '17:05', location: 'IGI Airport - Terminal 3' },
+    PNR4R18Q7: { mode: 'Train', transportNumber: '12301', date: '26/08/2026', time: '09:15', location: 'New Delhi Railway Station' },
+    PNR9Z55L3: { mode: 'Flight', transportNumber: 'AI-102', date: '27/08/2026', time: '21:45', location: 'IGI Airport - Terminal 3' },
+    PNRUA83X1: { mode: 'Flight', transportNumber: 'UA-83', date: '26/08/2026', time: '11:00', location: 'IGI Airport - Terminal 3' },
+    PNRAF226Z: { mode: 'Flight', transportNumber: 'AF-226', date: '28/08/2026', time: '23:10', location: 'IGI Airport - Terminal 3' },
+};
+// `recheck` asks for the booking as it stands now rather than as first ticketed - only differs for a
+// booking that has since been moved (rebookedTo).
+window.mockPnrLookup = (mode, pnrNumber, { recheck = false } = {}) => {
     if (!pnrNumber?.trim()) {
         return { success: false, reason: 'Enter a PNR before verifying.' };
+    }
+    const known = window.MOCK_PNR_BOOKINGS[pnrNumber.trim().toUpperCase()];
+    if (known) {
+        if (known.mode !== mode) return { success: false, reason: `This PNR is a ${known.mode.toLowerCase()} booking, not a ${mode.toLowerCase()} one.` };
+        const current = (recheck && known.rebookedTo) || known;
+        return { success: true, transportNumber: current.transportNumber, date: current.date, time: current.time, location: current.location };
     }
     const seed = hashSeed(`PNR|${mode}|${pnrNumber.trim().toUpperCase()}`);
     if (seed % 100 < 15) {
@@ -1414,6 +1450,18 @@ window.mockPnrLookup = (mode, pnrNumber) => {
         : `${12000 + (seed % 8000)}`;
     return { success: true, date, time, location, transportNumber };
 };
+
+// A travel plan is one journey (one flight or train, one date, one arrival/departure point), and a
+// group on that journey can hold several PNRs - a delegation is often ticketed across more than one
+// booking. Each PNR carries the members travelling on it. Older records only ever had a single
+// pnrNumber for the whole roster, so they read back as one group holding everyone.
+window.planPnrGroups = (plan) => {
+    if (Array.isArray(plan.pnrs)) return plan.pnrs;
+    return plan.pnrNumber ? [{ pnr: plan.pnrNumber, memberIds: (plan.people || []).map(p => p.id) }] : [];
+};
+// Two bookings are the same journey when they are on the same flight/train on the same date. The
+// arrival time is the service's own, so it can't differ between bookings on the same flight.
+window.sameJourney = (a, b) => a.transportNumber === b.transportNumber && a.date === b.date;
 
 /* ------------------------------------------------------------------ */
 /* Route Plan Suggestion Engine - two separate, never-merged sources:  */
@@ -11137,6 +11185,13 @@ window.TravelPlansTab = ({ data, setData }) => {
     // toggleMemberType's own comments explain why each does or doesn't also clear the roster itself).
     const [selectedMemberIds, setSelectedMemberIds] = useState([]);
     const ticketInputRef = useRef(null);
+    // Every verified PNR on this draft, in the order added. The first one sets the journey (transport
+    // number, date, time, location); each one after it must resolve to that same journey or it's
+    // refused. manualPlanForm.pnrNumber/pnrStatus/pnrError are the "add another PNR" input, cleared
+    // after each successful add. Each person in `people` carries the `pnr` they're travelling on.
+    const [pnrList, setPnrList] = useState([]);
+    // Which PNR newly added members go onto - defaults to the most recently verified one.
+    const [targetPnr, setTargetPnr] = useState('');
 
     const [showAllArrivals, setShowAllArrivals] = useState(false);
     const [showAllDepartures, setShowAllDepartures] = useState(false);
@@ -11166,6 +11221,9 @@ window.TravelPlansTab = ({ data, setData }) => {
         setTransportMode(mode);
         setManualPlanForm(f => ({ ...f, transportNumber: '', pnrNumber: '', pnrStatus: 'idle', pnrError: '',
             dateDD: '', dateMM: '', dateYYYY: '', timeHH: '', timeMM: '', location: '', city: '' }));
+        setPnrList([]);
+        setTargetPnr('');
+        setPeople(list => list.map(p => ({ ...p, pnr: null })));
     };
 
     // The Federation -> SOA -> Member Type -> Members cascade (window.SPORTS_FEDERATIONS/SOA_LIST/
@@ -11239,10 +11297,12 @@ window.TravelPlansTab = ({ data, setData }) => {
     const addSelectedMembers = () => {
         const toAdd = data.atomMasterDirectory.filter(p => selectedMemberIds.includes(p.id));
         if (toAdd.length === 0) return;
-        setPeople(list => [...list, ...toAdd.map(p => ({ id: p.id, firstName: p.firstName, lastName: p.lastName, stakeholderType: p.stakeholderType, phone: p.phone }))]);
+        const pnr = pnrApplicable && pnrList.includes(targetPnr) ? targetPnr : null;
+        setPeople(list => [...list, ...toAdd.map(p => ({ id: p.id, firstName: p.firstName, lastName: p.lastName, stakeholderType: p.stakeholderType, phone: p.phone, pnr }))]);
         setSelectedMemberIds([]);
     };
     const removePerson = (id) => setPeople(list => list.filter(p => p.id !== id));
+    const movePersonToPnr = (id, pnr) => setPeople(list => list.map(p => p.id === id ? { ...p, pnr: pnr || null } : p));
 
     // The ATOM directory, for Point of Contact search - every registered person, independent of
     // whether they're actually on THIS plan's own roster (a POC can be a logistics coordinator who
@@ -11267,40 +11327,68 @@ window.TravelPlansTab = ({ data, setData }) => {
         }));
     };
 
-    // PNR verify/lock flow (window.mockPnrLookup) - 'checking' shows a brief loading state (same
-    // 900ms simulated-latency convention as this file's other mocked lookups, e.g. Travel Plans' own
-    // Refresh Status), then lands on 'verified' (locked, date/time/location auto-fetched) or 'failed'
-    // (locked message + Try Again, nothing auto-fetched). Failure clears any stale auto-fetched values
-    // from a previous attempt rather than leaving them showing.
+    // Adds one PNR to the draft (window.mockPnrLookup, 900ms simulated latency like this file's other
+    // mocked lookups). Refused, with the reason shown under the input, when: the lookup fails; the PNR
+    // is already on this draft; it's already on another saved travel plan (one booking, one plan); or
+    // it resolves to a different flight/train or date than the PNRs already here - a group is only ever
+    // people genuinely on the same journey, never silently merged with a different one. The first PNR
+    // accepted sets the journey fields shown below it.
     const verifyPnr = () => {
+        const number = manualPlanForm.pnrNumber.trim().toUpperCase();
+        const fail = (reason) => setManualPlanForm(f => ({ ...f, pnrStatus: 'failed', pnrError: reason }));
+        if (pnrList.includes(number)) { fail(`${number} is already on this travel plan.`); return; }
+        const owner = data.manualPlans.find(p => window.planPnrGroups(p).some(g => g.pnr === number));
+        if (owner) { fail(`${number} is already on the ${owner.soa ? owner.soa + ' ' : ''}${owner.federation || ''} travel plan (${owner.id}).`); return; }
         setManualPlanForm(f => ({ ...f, pnrStatus: 'checking' }));
         setTimeout(() => {
-            const result = window.mockPnrLookup(transportMode, manualPlanForm.pnrNumber);
-            if (result.success) {
+            const result = window.mockPnrLookup(transportMode, number);
+            if (!result.success) { fail(result.reason); return; }
+            if (pnrList.length > 0) {
+                const journey = { transportNumber: manualPlanForm.transportNumber, date: draftDate };
+                if (!window.sameJourney(result, journey)) {
+                    fail(`${number} is on ${result.transportNumber} on ${result.date}, not ${journey.transportNumber} on ${journey.date}. Create a separate travel plan for it.`);
+                    return;
+                }
+                setManualPlanForm(f => ({ ...f, pnrNumber: '', pnrStatus: 'idle', pnrError: '' }));
+            } else {
                 const [dd, mm, yyyy] = result.date.split('/');
                 const [hh, mm2] = result.time.split(':');
-                setManualPlanForm(f => ({ ...f, pnrStatus: 'verified', pnrError: '', transportNumber: result.transportNumber,
+                setManualPlanForm(f => ({ ...f, pnrNumber: '', pnrStatus: 'idle', pnrError: '', transportNumber: result.transportNumber,
                     dateDD: dd, dateMM: mm, dateYYYY: yyyy, timeHH: hh, timeMM: mm2, location: result.location, city: 'New Delhi' }));
-            } else {
-                setManualPlanForm(f => ({ ...f, pnrStatus: 'failed', pnrError: result.reason, transportNumber: '',
-                    dateDD: '', dateMM: '', dateYYYY: '', timeHH: '', timeMM: '', location: '' }));
             }
+            setPnrList(list => [...list, number]);
+            setTargetPnr(number);
+            // Members added before any PNR existed land on the first one, rather than all needing
+            // to be assigned by hand.
+            if (pnrList.length === 0) setPeople(list => list.map(p => p.pnr ? p : { ...p, pnr: number }));
         }, 900);
     };
-    // Unlocks the PNR field and clears every auto-fetched value it drove - re-verification (a fresh
-    // window.mockPnrLookup call) is mandatory before proceeding again, and a re-verify that comes back
-    // with different date/time/location cleanly overwrites whatever was fetched the first time (same
-    // setManualPlanForm call in verifyPnr above, nothing here merges old and new values).
-    const editPnr = () => {
-        setManualPlanForm(f => ({ ...f, pnrStatus: 'idle', pnrError: '', transportNumber: '',
-            dateDD: '', dateMM: '', dateYYYY: '', timeHH: '', timeMM: '', location: '' }));
+    // Removing a PNR leaves its members on the draft, just not on a booking yet (they need moving to
+    // another PNR before publishing). Removing the last one unlocks the journey fields it set.
+    const removePnr = (number) => {
+        const rest = pnrList.filter(p => p !== number);
+        setPnrList(rest);
+        setPeople(list => list.map(p => p.pnr === number ? { ...p, pnr: null } : p));
+        if (targetPnr === number) setTargetPnr(rest[rest.length - 1] || '');
+        if (rest.length === 0) {
+            setManualPlanForm(f => ({ ...f, transportNumber: '', dateDD: '', dateMM: '', dateYYYY: '', timeHH: '', timeMM: '', location: '' }));
+        }
     };
 
     // What "complete enough to publish" means - Federation, SOA, at least one member, and (Flight/
     // Train only) a successfully verified PNR. Blocks the Publish button entirely rather than letting
     // a partially-filled plan through and hoping someone notices - see saveManualPlan's own guard.
-    const canPublish = !!manualPlanForm.federation && !!manualPlanForm.soa && people.length > 0
-        && (!pnrApplicable || manualPlanForm.pnrStatus === 'verified');
+    // Flight/Train: at least one verified PNR, every member on one of them, and no PNR left empty.
+    const unassignedCount = pnrApplicable ? people.filter(p => !p.pnr || !pnrList.includes(p.pnr)).length : 0;
+    const emptyPnrs = pnrApplicable ? pnrList.filter(n => !people.some(p => p.pnr === n)) : [];
+    const pnrReady = !pnrApplicable || (pnrList.length > 0 && unassignedCount === 0 && emptyPnrs.length === 0);
+    const canPublish = !!manualPlanForm.federation && !!manualPlanForm.soa && people.length > 0 && pnrReady;
+    const publishHint = !manualPlanForm.federation || !manualPlanForm.soa || people.length === 0
+        ? `Needs Federation, SOA, at least one member${pnrApplicable ? ', and a verified PNR' : ''} before this can be published.`
+        : pnrApplicable && pnrList.length === 0 ? 'Add and verify at least one PNR before this can be published.'
+        : unassignedCount > 0 ? `${unassignedCount} member${unassignedCount === 1 ? ' isn\'t' : 's aren\'t'} on a PNR yet - pick one for ${unassignedCount === 1 ? 'them' : 'each'} on the right.`
+        : emptyPnrs.length > 0 ? `${emptyPnrs.join(', ')} ${emptyPnrs.length === 1 ? 'has' : 'have'} nobody on it - add members to it or remove it.`
+        : '';
 
     // Live draft date/time, combined the same way saveManualPlan combines them at save time - lets
     // the overlap warning below react as the admin fills in the form, not just after saving.
@@ -11320,6 +11408,42 @@ window.TravelPlansTab = ({ data, setData }) => {
         const draft = { pocId: manualPlanForm.pocId, pocName: manualPlanForm.pocName, date: draftDate, time: draftTime };
         return data.manualPlans.find(p => plansShareOverlappingPoc(draft, p, pocOverlapWindowHours)) || null;
     }, [data.manualPlans, manualPlanForm.pocId, manualPlanForm.pocName, draftDate, draftTime, pocOverlapWindowHours]);
+
+    // The same delegation already has a travel plan on this exact journey - most likely more of the
+    // same group on another booking. Offered as a merge (their PNRs and members join that plan) rather
+    // than a second plan, which would raise a second arrival suggestion and a second vehicle for the
+    // same people at the same terminal. Only the same Federation + SOA counts: a different delegation
+    // on the same flight stays a fully separate travel plan.
+    const sameJourneyPlan = useMemo(() => {
+        if (!pnrApplicable || pnrList.length === 0 || !manualPlanForm.federation || !manualPlanForm.soa) return null;
+        return data.manualPlans.find(p => p.planType === planType && p.transportMode === transportMode
+            && p.federation === manualPlanForm.federation && p.soa === manualPlanForm.soa
+            && window.sameJourney(p, { transportNumber: manualPlanForm.transportNumber, date: draftDate })) || null;
+    }, [data.manualPlans, pnrApplicable, pnrList.length, planType, transportMode, manualPlanForm.federation, manualPlanForm.soa, manualPlanForm.transportNumber, draftDate]);
+
+    // Folds this draft's PNRs and members into sameJourneyPlan. Its still-pending arrival/departure
+    // suggestion (if any) grows by the same headcount; a Route Plan already created from it is left
+    // alone but flagged, since it was sized for the smaller group.
+    const mergeIntoExistingPlan = () => {
+        const target = sameJourneyPlan;
+        if (!target || !canPublish) return;
+        const existingIds = new Set(target.people.map(p => p.id));
+        const added = people.filter(p => !existingIds.has(p.id));
+        const groups = [...window.planPnrGroups(target), ...pnrList.map(n => ({ pnr: n, memberIds: added.filter(p => p.pnr === n).map(p => p.id) }))];
+        const baseSize = Number(target.memberSize) || target.people.length;
+        setData(d => ({
+            ...d,
+            manualPlans: d.manualPlans.map(p => p.id === target.id
+                ? { ...p, pnrs: groups, pnrNumber: groups[0]?.pnr || p.pnrNumber, people: [...p.people, ...added.map(x => ({ ...x, atomVerified: true }))], memberSize: baseSize + added.length }
+                : p),
+            pendingDemands: d.pendingDemands.map(dm => dm.sourceManualPlanId === target.id ? { ...dm, headcount: (Number(dm.headcount) || 0) + added.length } : dm),
+        }));
+        setManualModal(false);
+        resetManualPlanForm();
+        const linked = target.linkedRouteIds || [];
+        alert(`Added ${pnrList.length} PNR${pnrList.length === 1 ? '' : 's'} and ${added.length} member${added.length === 1 ? '' : 's'} to ${target.id}.`
+            + (linked.length ? ` Route plan ${linked.join(', ')} was already created for this group before - check it still has room for everyone.` : ''));
+    };
 
     const handleTicketSelect = (e) => {
         const file = e.target.files[0];
@@ -11382,8 +11506,14 @@ window.TravelPlansTab = ({ data, setData }) => {
         const { dateDD, dateMM, dateYYYY, timeHH, timeMM, pnrStatus, pnrError, ...rest } = manualPlanForm;
         const date = (dateDD || dateMM || dateYYYY) ? `${dateDD.padStart(2, '0')}/${dateMM.padStart(2, '0')}/${dateYYYY}` : '';
         const time = (timeHH || timeMM) ? `${timeHH.padStart(2, '0')}:${timeMM.padStart(2, '0')}` : '';
+        const pnrs = pnrApplicable ? pnrList.map(n => ({ pnr: n, memberIds: people.filter(p => p.pnr === n).map(p => p.id) })) : [];
         const plan = {
-            id: uid('MAN'), planType, transportMode, ...rest, date, time, people, memberSize: people.length,
+            id: uid('MAN'), planType, transportMode, ...rest, date, time,
+            people: people.map(p => ({ ...p, atomVerified: true, pnr: pnrApplicable ? p.pnr : undefined })), memberSize: people.length,
+            // pnrNumber stays as the plan's primary booking - the one Live Status and the arrival
+            // suggestion track the flight/train through. Any booking on the journey would do, since
+            // they're all on the same service.
+            pnrs, pnrNumber: pnrs[0]?.pnr || '',
             createdAt: new Date().toISOString().slice(0, 10),
             // Populated once a Route Plan is actually created from this plan's demand (fix-list item
             // 31) - see raiseTravelDemand's sourceManualPlanId and window.RoutePlansTab/
@@ -11403,6 +11533,8 @@ window.TravelPlansTab = ({ data, setData }) => {
         setManualPlanForm({ ...DEFAULT_MANUAL_FORM });
         setPeople([]);
         setSelectedMemberIds([]);
+        setPnrList([]);
+        setTargetPnr('');
         setPlanType('Arrival');
         setTransportMode('Flight');
     };
@@ -11441,7 +11573,8 @@ window.TravelPlansTab = ({ data, setData }) => {
     const exportManualPlans = () => exportCSV('arrivals-departures.csv', data.manualPlans.map(p => ({
         id: p.id, planType: p.planType, federation: p.federation, soa: p.soa,
         memberSize: p.memberSize, date: p.date, time: p.time,
-        transportMode: p.transportMode, transportNumber: p.transportNumber, pnrNumber: p.pnrNumber,
+        transportMode: p.transportMode, transportNumber: p.transportNumber,
+        pnrNumber: window.planPnrGroups(p).map(g => g.pnr).join(';') || p.pnrNumber,
         city: p.city, location: p.location, pocId: p.pocId, pocName: p.pocName, pocContact: p.pocContact,
     })));
     const handleManualImport = (file) => importCSV(file, rows => {
@@ -11451,7 +11584,11 @@ window.TravelPlansTab = ({ data, setData }) => {
             federation: r.federation || '', soa: r.soa || '',
             memberSize: r.memberSize || '', date: r.date || '', time: r.time || '',
             transportMode: ['Flight', 'Train', 'Bus', 'Car'].includes(r.transportMode) ? r.transportMode : 'Flight',
-            transportNumber: r.transportNumber || '', pnrNumber: r.pnrNumber || '',
+            // Several PNRs for one journey come in ';'-separated, the same way export writes them.
+            // Members aren't part of CSV, so the imported bookings start with nobody on them.
+            transportNumber: r.transportNumber || '',
+            pnrNumber: (r.pnrNumber || '').split(';')[0].trim(),
+            pnrs: (r.pnrNumber || '').split(';').map(x => x.trim()).filter(Boolean).map(pnr => ({ pnr, memberIds: [] })),
             city: r.city || '', location: r.location || '',
             pocId: r.pocId || null, pocName: r.pocName || '', pocContact: r.pocContact || '',
             uploadedTicket: null, people: [],
@@ -11499,8 +11636,11 @@ window.TravelPlansTab = ({ data, setData }) => {
                         <p className="text-slate-700 font-medium truncate">{plan.transportNumber || '—'}</p>
                     </div>
                     <div className="min-w-0">
-                        <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">PNR</p>
-                        <p className="text-slate-700 font-mono truncate">{plan.pnrNumber || '—'}</p>
+                        <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">{window.planPnrGroups(plan).length > 1 ? `PNRs (${window.planPnrGroups(plan).length})` : 'PNR'}</p>
+                        <p className="text-slate-700 font-mono truncate">
+                            {plan.pnrNumber || '—'}
+                            {window.planPnrGroups(plan).length > 1 && <span className="ml-1 font-sans text-[11px] font-semibold text-brandAccent">+{window.planPnrGroups(plan).length - 1} more</span>}
+                        </p>
                     </div>
                     <div className="min-w-0">
                         <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">{plan.planType} Time</p>
@@ -11551,6 +11691,50 @@ window.TravelPlansTab = ({ data, setData }) => {
     const [selectedPlanId, setSelectedPlanId] = useState(null);
     const selectedPlan = selectedPlanId ? data.manualPlans.find(p => p.id === selectedPlanId) : null;
 
+    // "Re-check bookings" on a plan's detail view: looks every PNR up again (window.mockPnrLookup with
+    // recheck) and flags any booking that has since moved to a different flight/train or date. planId ->
+    // { checking, results: { [pnr]: lookupResult } }.
+    const [bookingChecks, setBookingChecks] = useState({});
+    const [splitNotice, setSplitNotice] = useState(null);
+    const recheckBookings = (plan) => {
+        setBookingChecks(c => ({ ...c, [plan.id]: { checking: true, results: c[plan.id]?.results || {} } }));
+        setTimeout(() => {
+            const results = {};
+            window.planPnrGroups(plan).forEach(g => { results[g.pnr] = window.mockPnrLookup(plan.transportMode, g.pnr, { recheck: true }); });
+            setBookingChecks(c => ({ ...c, [plan.id]: { checking: false, results } }));
+        }, 900);
+    };
+    // One booking on the group moved to another journey: its members leave this plan for a new travel
+    // plan of their own on the new flight/train, with its own arrival/departure suggestion. Everyone
+    // else stays exactly where they were. Same delegation, POC and ticket on the new plan.
+    const splitPnrOff = (plan, pnr, journey) => {
+        const group = window.planPnrGroups(plan).find(g => g.pnr === pnr);
+        if (!group) return;
+        const moving = plan.people.filter(p => group.memberIds.includes(p.id));
+        const remainingGroups = window.planPnrGroups(plan).filter(g => g.pnr !== pnr);
+        const newPlan = {
+            ...plan, id: uid('MAN'), transportNumber: journey.transportNumber, date: journey.date, time: journey.time,
+            location: journey.location || plan.location, pnrNumber: pnr, pnrs: [group], people: moving,
+            memberSize: moving.length, createdAt: new Date().toISOString().slice(0, 10), linkedRouteIds: [], splitFrom: plan.id,
+        };
+        const baseSize = Number(plan.memberSize) || plan.people.length;
+        setData(d => ({
+            ...d,
+            manualPlans: [...d.manualPlans.map(p => p.id === plan.id ? {
+                ...p, pnrs: remainingGroups, pnrNumber: remainingGroups[0]?.pnr || '',
+                people: p.people.filter(x => !group.memberIds.includes(x.id)),
+                memberSize: Math.max(baseSize - moving.length, p.people.length - moving.length),
+            } : p), newPlan],
+            pendingDemands: [
+                ...d.pendingDemands.map(dm => dm.sourceManualPlanId === plan.id ? { ...dm, headcount: Math.max(0, (Number(dm.headcount) || 0) - moving.length) } : dm),
+                raiseTravelDemand(newPlan),
+            ],
+        }));
+        setBookingChecks(c => { const next = { ...c }; delete next[plan.id]; return next; });
+        setSplitNotice({ planId: plan.id, newId: newPlan.id, pnr, count: moving.length, journey,
+            linked: (plan.linkedRouteIds || []).length ? plan.linkedRouteIds : null });
+    };
+
     const renderPlanRecordCard = (plan) => (
         <button key={plan.id} onClick={() => setSelectedPlanId(plan.id)}
             className="w-full text-left bg-white border border-slate-300 rounded-xl p-4 shadow-sm hover:shadow-md hover:border-slate-400 transition-all">
@@ -11575,8 +11759,11 @@ window.TravelPlansTab = ({ data, setData }) => {
                     <p className="text-slate-700 font-medium truncate">{plan.transportNumber || '—'}</p>
                 </div>
                 <div className="min-w-0">
-                    <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">PNR</p>
-                    <p className="text-slate-700 font-mono truncate">{plan.pnrNumber || '—'}</p>
+                    <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">{window.planPnrGroups(plan).length > 1 ? `PNRs (${window.planPnrGroups(plan).length})` : 'PNR'}</p>
+                    <p className="text-slate-700 font-mono truncate">
+                        {plan.pnrNumber || '—'}
+                        {window.planPnrGroups(plan).length > 1 && <span className="ml-1 font-sans text-[11px] font-semibold text-brandAccent">+{window.planPnrGroups(plan).length - 1} more</span>}
+                    </p>
                 </div>
                 <div className="min-w-0">
                     <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">{plan.planType} Time</p>
@@ -11669,8 +11856,8 @@ window.TravelPlansTab = ({ data, setData }) => {
                                 <p className="text-slate-700 truncate">{selectedPlan.transportNumber || '—'}</p>
                             </div>
                             <div className="min-w-0">
-                                <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">PNR</p>
-                                <p className="text-slate-700 font-mono truncate">{selectedPlan.pnrNumber || '—'}</p>
+                                <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Bookings</p>
+                                <p className="text-slate-700 truncate">{window.planPnrGroups(selectedPlan).length || '—'} PNR{window.planPnrGroups(selectedPlan).length === 1 ? '' : 's'}</p>
                             </div>
                             <div className="min-w-0">
                                 <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">{selectedPlan.planType} Time</p>
@@ -11711,47 +11898,116 @@ window.TravelPlansTab = ({ data, setData }) => {
                         )}
                     </div>
 
-                    <div>
-                        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">
-                            Members ({selectedPlan.people.length})
-                        </p>
-                        {selectedPlan.people.length === 0 ? (
-                            <p className="text-sm text-slate-400">No participants were added to this record.</p>
-                        ) : (
-                            <div className="overflow-x-auto border border-slate-100 rounded-lg">
-                                <table className="w-full text-xs">
-                                    <thead className="bg-slate-50 text-slate-500">
-                                        <tr>
-                                            <th className="px-3 py-2 text-left font-medium">ATOM ID</th>
-                                            <th className="px-3 py-2 text-left font-medium">First Name</th>
-                                            <th className="px-3 py-2 text-left font-medium">Last Name</th>
-                                            <th className="px-3 py-2 text-left font-medium">Stakeholder Type</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-slate-100">
-                                        {selectedPlan.people.map(p => (
-                                            <tr key={p.id}>
-                                                <td className="px-3 py-2 font-mono">
-                                                    {p.id}
-                                                    {p.atomVerified ? (
-                                                        <Icon name="check" size={11} className="inline align-[-1px] ml-1 text-emerald-500" />
-                                                    ) : (
-                                                        <span title="Not resolved against the ATOM directory - typed by hand" className="ml-1 text-[9px] text-amber-500 font-semibold align-middle">?</span>
-                                                    )}
-                                                </td>
-                                                <td className="px-3 py-2">{p.firstName}</td>
-                                                <td className="px-3 py-2">{p.lastName}</td>
-                                                <td className="px-3 py-2">
-                                                    <span className="bg-blue-50 text-blue-700 text-[10px] px-2 py-1 rounded-full font-semibold">
-                                                        {p.stakeholderType}
-                                                    </span>
-                                                </td>
-                                            </tr>
-                                        ))}
-                                    </tbody>
-                                </table>
+                    {splitNotice && splitNotice.planId === selectedPlan.id && (
+                        <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3 flex gap-2">
+                            <Icon name="check" size={15} className="text-emerald-600 shrink-0 mt-0.5" />
+                            <div className="text-xs text-emerald-800 min-w-0">
+                                <p>
+                                    {splitNotice.pnr} ({splitNotice.count} member{splitNotice.count === 1 ? '' : 's'}) moved to its own travel plan <strong>{splitNotice.newId}</strong> on {splitNotice.journey.transportNumber}, {splitNotice.journey.date} {splitNotice.journey.time}, with its own arrival suggestion in Route Plans.
+                                </p>
+                                {splitNotice.linked && <p className="mt-1">Route plan {splitNotice.linked.join(', ')} was created for the full group - they're no longer on this journey, so review it.</p>}
+                                <button type="button" onClick={() => { setSplitNotice(null); setSelectedPlanId(splitNotice.newId); }} className="mt-1 font-semibold underline">Open {splitNotice.newId}</button>
                             </div>
-                        )}
+                        </div>
+                    )}
+
+                    <div>
+                        <div className="flex items-center justify-between gap-3 mb-2 flex-wrap">
+                            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                                Members ({selectedPlan.people.length}){window.planPnrGroups(selectedPlan).length > 0 ? ` · by PNR` : ''}
+                            </p>
+                            {(selectedPlan.transportMode === 'Flight' || selectedPlan.transportMode === 'Train') && window.planPnrGroups(selectedPlan).length > 0 && (
+                                <button type="button" onClick={() => recheckBookings(selectedPlan)} disabled={bookingChecks[selectedPlan.id]?.checking}
+                                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-brandAccent hover:underline disabled:opacity-50">
+                                    <span className={`inline-block leading-none ${bookingChecks[selectedPlan.id]?.checking ? 'animate-spin' : ''}`}>&#8635;</span>
+                                    {bookingChecks[selectedPlan.id]?.checking ? 'Checking bookings...' : 'Re-check bookings'}
+                                </button>
+                            )}
+                        </div>
+                        {(() => {
+                            const groups = window.planPnrGroups(selectedPlan);
+                            const check = bookingChecks[selectedPlan.id];
+                            const grouped = new Set(groups.flatMap(g => g.memberIds));
+                            const loose = selectedPlan.people.filter(p => !grouped.has(p.id));
+                            const legacyExtra = Math.max(0, (Number(selectedPlan.memberSize) || 0) - selectedPlan.people.length);
+                            const memberRow = (p) => (
+                                <div key={p.id} className="flex items-center gap-3 px-3 py-2 text-xs">
+                                    <span className="w-7 h-7 rounded-full bg-gradient-to-br from-blue-500 to-indigo-500 text-white text-[10px] font-bold flex items-center justify-center shrink-0">
+                                        {(p.firstName?.[0] || '') + (p.lastName?.[0] || '')}
+                                    </span>
+                                    <div className="min-w-0 flex-1">
+                                        <p className="text-slate-800 font-medium truncate">{p.firstName} {p.lastName}</p>
+                                        <p className="text-slate-400 font-mono truncate">
+                                            {p.id}
+                                            {p.atomVerified ? <Icon name="check" size={10} className="inline align-[-1px] ml-1 text-emerald-500" />
+                                                : <span title="Not resolved against the ATOM directory - typed by hand" className="ml-1 text-[9px] text-amber-500 font-semibold">?</span>}
+                                        </p>
+                                    </div>
+                                    <span className="bg-blue-50 text-blue-700 text-[10px] px-2 py-1 rounded-full font-semibold shrink-0">{p.stakeholderType}</span>
+                                </div>
+                            );
+                            if (groups.length === 0) {
+                                return selectedPlan.people.length === 0
+                                    ? <p className="text-sm text-slate-400">No participants were added to this record.</p>
+                                    : <div className="border border-slate-200 rounded-lg divide-y divide-slate-100">{selectedPlan.people.map(memberRow)}</div>;
+                            }
+                            return (
+                                <div className="space-y-3">
+                                    {groups.map(g => {
+                                        const members = selectedPlan.people.filter(p => g.memberIds.includes(p.id));
+                                        const res = check?.results?.[g.pnr];
+                                        const moved = res && res.success && !window.sameJourney(res, selectedPlan);
+                                        return (
+                                            <div key={g.pnr} className={`border rounded-lg overflow-hidden ${moved ? 'border-amber-300' : 'border-slate-200'}`}>
+                                                <div className={`flex items-center justify-between gap-3 px-3 py-2 ${moved ? 'bg-amber-50' : 'bg-slate-50'}`}>
+                                                    <div className="flex items-center gap-2 min-w-0">
+                                                        <span className="w-7 h-7 rounded-lg bg-white border border-slate-200 text-brandAccent flex items-center justify-center shrink-0">
+                                                            <TransportGlyph mode={selectedPlan.transportMode} size={13} />
+                                                        </span>
+                                                        <div className="min-w-0">
+                                                            <p className="font-mono text-xs font-semibold text-slate-800">{g.pnr}</p>
+                                                            <p className="text-[11px] text-slate-400">{members.length} member{members.length === 1 ? '' : 's'}</p>
+                                                        </div>
+                                                    </div>
+                                                    {res && !moved && res.success && <span className="text-[11px] font-semibold text-emerald-600 flex items-center gap-1 shrink-0"><Icon name="check" size={11} />Still on {selectedPlan.transportNumber}</span>}
+                                                    {res && !res.success && <span className="text-[11px] font-semibold text-red-600 shrink-0">{res.reason}</span>}
+                                                    {moved && <span className="text-[11px] font-semibold text-amber-700 shrink-0">Rebooked</span>}
+                                                </div>
+                                                {moved && (
+                                                    <div className="px-3 py-2.5 bg-amber-50/60 border-t border-amber-200 flex items-center justify-between gap-3 flex-wrap">
+                                                        <p className="text-xs text-amber-800 min-w-0">
+                                                            Now on <strong>{res.transportNumber}</strong>, {res.date} at {res.time} - no longer on this group's journey.
+                                                        </p>
+                                                        {groups.length > 1 ? (
+                                                            <button type="button" onClick={() => splitPnrOff(selectedPlan, g.pnr, res)}
+                                                                className="shrink-0 px-3 py-1.5 text-xs font-semibold text-white bg-amber-600 hover:bg-amber-700 rounded-lg transition">
+                                                                Split into its own travel plan
+                                                            </button>
+                                                        ) : (
+                                                            <p className="text-[11px] text-amber-700">This is the plan's only booking - the whole group has moved.</p>
+                                                        )}
+                                                    </div>
+                                                )}
+                                                {members.length > 0 ? (
+                                                    <div className="divide-y divide-slate-100">{members.map(memberRow)}</div>
+                                                ) : (
+                                                    <p className="px-3 py-2.5 text-xs text-slate-400">No named members on this booking.</p>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+                                    {loose.length > 0 && (
+                                        <div className="border border-slate-200 rounded-lg overflow-hidden">
+                                            <p className="px-3 py-2 bg-slate-50 text-xs font-semibold text-slate-500">Not on a listed PNR</p>
+                                            <div className="divide-y divide-slate-100">{loose.map(memberRow)}</div>
+                                        </div>
+                                    )}
+                                    {legacyExtra > 0 && (
+                                        <p className="text-[11px] text-slate-400">Plus {legacyExtra} more in the group headcount without a named roster entry.</p>
+                                    )}
+                                </div>
+                            );
+                        })()}
                     </div>
                 </div>
             )}
@@ -11983,6 +12239,15 @@ window.TravelPlansTab = ({ data, setData }) => {
                                         ))}
                                     </div>
                                 )}
+                                {selectedMemberIds.length > 0 && pnrApplicable && pnrList.length > 1 && (
+                                    <div className="mt-2 flex items-center gap-2">
+                                        <span className="text-[11px] font-medium text-slate-500 shrink-0">Travelling on</span>
+                                        <select value={targetPnr} onChange={e => setTargetPnr(e.target.value)}
+                                            className="flex-1 min-w-0 px-2 py-1.5 text-xs font-mono border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brandAccent/30">
+                                            {pnrList.map(n => <option key={n} value={n}>{n}</option>)}
+                                        </select>
+                                    </div>
+                                )}
                                 {selectedMemberIds.length > 0 && (
                                     <Btn variant="outline" className="w-full mt-2" onClick={addSelectedMembers}>
                                         <Icon name="plus" size={13} className="inline mr-1" />Add {selectedMemberIds.length} Selected Member{selectedMemberIds.length === 1 ? '' : 's'}
@@ -12009,39 +12274,65 @@ window.TravelPlansTab = ({ data, setData }) => {
                             {pnrApplicable ? (
                                 <>
                                     <div>
-                                        <span className="text-xs font-medium text-slate-500 mb-1.5 block">PNR Number</span>
-                                        <div className="flex gap-2">
-                                            <input value={manualPlanForm.pnrNumber} disabled={manualPlanForm.pnrStatus === 'verified'}
-                                                onChange={e => updateManual('pnrNumber', e.target.value)}
-                                                className="flex-1 px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brandAccent/30 disabled:bg-slate-50 disabled:text-slate-500" />
-                                            {manualPlanForm.pnrStatus === 'verified' ? (
-                                                <button type="button" onClick={editPnr}
-                                                    className="shrink-0 px-3 py-2 text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg transition">
-                                                    Edit
-                                                </button>
-                                            ) : (
-                                                <button type="button" onClick={verifyPnr} disabled={manualPlanForm.pnrStatus === 'checking' || !manualPlanForm.pnrNumber.trim()}
-                                                    className="shrink-0 px-3 py-2 text-xs font-semibold text-white bg-brandAccent hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg transition">
-                                                    {manualPlanForm.pnrStatus === 'checking' ? 'Checking...' : 'Verify'}
-                                                </button>
-                                            )}
+                                        <div className="flex items-center justify-between mb-1.5">
+                                            <span className="text-xs font-medium text-slate-500 block">PNR Numbers</span>
+                                            {pnrList.length > 0 && <span className="text-[11px] text-slate-400">{pnrList.length} booking{pnrList.length === 1 ? '' : 's'} on this journey</span>}
                                         </div>
-                                        {manualPlanForm.pnrStatus === 'verified' && (
-                                            <p className="text-[11px] text-emerald-600 mt-1 flex items-center gap-1">
-                                                <Icon name="check" size={11} className="shrink-0" />PNR verified - {transportLabel.toLowerCase()}, date, time and location fetched below.
-                                            </p>
-                                        )}
-                                        {manualPlanForm.pnrStatus === 'failed' && (
-                                            <div className="mt-1.5 flex items-center justify-between gap-2 bg-red-50 border border-red-200 rounded-lg px-2.5 py-1.5">
-                                                <p className="text-[11px] text-red-700 flex items-center gap-1">
-                                                    <Icon name="close" size={11} className="shrink-0" />{manualPlanForm.pnrError}
-                                                </p>
-                                                <button type="button" onClick={verifyPnr} className="shrink-0 text-[11px] font-semibold text-red-700 underline">Try Again</button>
+                                        {pnrList.length > 0 && (
+                                            <div className="space-y-1.5 mb-2">
+                                                {pnrList.map((n, i) => {
+                                                    const count = people.filter(p => p.pnr === n).length;
+                                                    return (
+                                                        <div key={n} className="flex items-center gap-2.5 px-2.5 py-2 bg-emerald-50/60 border border-emerald-200 rounded-lg">
+                                                            <span className="w-6 h-6 rounded-md bg-emerald-500 text-white flex items-center justify-center shrink-0"><Icon name="check" size={12} /></span>
+                                                            <span className="font-mono text-xs font-semibold text-slate-800">{n}</span>
+                                                            {i === 0 && <span className="text-[10px] font-semibold text-emerald-700 bg-white border border-emerald-200 rounded-full px-1.5 py-0.5">Sets journey</span>}
+                                                            <span className={`ml-auto text-[11px] ${count ? 'text-slate-500' : 'text-amber-600 font-semibold'}`}>{count ? `${count} member${count === 1 ? '' : 's'}` : 'No members yet'}</span>
+                                                            <button type="button" onClick={() => removePnr(n)} aria-label={`Remove PNR ${n}`}
+                                                                className="shrink-0 text-slate-400 hover:text-red-500 transition"><Icon name="close" size={14} /></button>
+                                                        </div>
+                                                    );
+                                                })}
                                             </div>
+                                        )}
+                                        <div className="flex gap-2">
+                                            <input value={manualPlanForm.pnrNumber} placeholder={pnrList.length ? 'Add another PNR on the same journey' : 'Enter PNR'}
+                                                onChange={e => setManualPlanForm(f => ({ ...f, pnrNumber: e.target.value, pnrStatus: f.pnrStatus === 'failed' ? 'idle' : f.pnrStatus, pnrError: '' }))}
+                                                onKeyDown={e => { if (e.key === 'Enter' && manualPlanForm.pnrNumber.trim() && manualPlanForm.pnrStatus !== 'checking') verifyPnr(); }}
+                                                className="flex-1 min-w-0 px-3 py-2 text-sm font-mono border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brandAccent/30" />
+                                            <button type="button" onClick={verifyPnr} disabled={manualPlanForm.pnrStatus === 'checking' || !manualPlanForm.pnrNumber.trim()}
+                                                className="shrink-0 px-3 py-2 text-xs font-semibold text-white bg-brandAccent hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg transition">
+                                                {manualPlanForm.pnrStatus === 'checking' ? 'Checking...' : pnrList.length ? 'Verify & Add' : 'Verify'}
+                                            </button>
+                                        </div>
+                                        {manualPlanForm.pnrStatus === 'failed' && (
+                                            <div className="mt-1.5 flex items-start justify-between gap-2 bg-red-50 border border-red-200 rounded-lg px-2.5 py-1.5">
+                                                <p className="text-[11px] text-red-700 flex items-start gap-1">
+                                                    <Icon name="close" size={11} className="shrink-0 mt-0.5" />{manualPlanForm.pnrError}
+                                                </p>
+                                            </div>
+                                        )}
+                                        {pnrList.length === 1 && manualPlanForm.pnrStatus !== 'failed' && (
+                                            <p className="text-[11px] text-slate-400 mt-1">Same group on other bookings? Add each PNR here - they must be on {manualPlanForm.transportNumber} on {draftDate}.</p>
                                         )}
                                     </div>
 
-                                    {manualPlanForm.pnrStatus === 'verified' ? (
+                                    {sameJourneyPlan && (
+                                        <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                                            <div className="flex gap-2">
+                                                <Icon name="alert" size={15} className="text-amber-600 shrink-0 mt-0.5" />
+                                                <p className="text-xs text-amber-800">
+                                                    <strong>{manualPlanForm.soa} {manualPlanForm.federation}</strong> already has a travel plan on {manualPlanForm.transportNumber} on {draftDate} ({sameJourneyPlan.id}, {window.planPnrGroups(sameJourneyPlan).length} PNR{window.planPnrGroups(sameJourneyPlan).length === 1 ? '' : 's'}). Add these PNRs to it instead, so the group gets one arrival and one vehicle plan?
+                                                </p>
+                                            </div>
+                                            <Btn className="w-full mt-2.5" onClick={mergeIntoExistingPlan} disabled={!canPublish}>
+                                                Add to {sameJourneyPlan.id} instead
+                                            </Btn>
+                                            {!canPublish && <p className="text-[11px] text-amber-700 mt-1 text-center">{publishHint}</p>}
+                                        </div>
+                                    )}
+
+                                    {pnrList.length > 0 ? (
                                         <>
                                             <div>
                                                 <span className="text-xs font-medium text-slate-500 mb-1 block">{transportLabel}</span>
@@ -12068,7 +12359,7 @@ window.TravelPlansTab = ({ data, setData }) => {
                                         </>
                                     ) : (
                                         <p className="text-xs text-slate-400 border border-dashed border-slate-200 rounded-lg px-3 py-3 text-center">
-                                            {transportLabel}, city, location, date and time fetch automatically once the PNR above is verified.
+                                            {transportLabel}, city, location, date and time fetch automatically once the first PNR above is verified.
                                         </p>
                                     )}
                                 </>
@@ -12187,42 +12478,69 @@ window.TravelPlansTab = ({ data, setData }) => {
                             <span className="text-xs font-medium text-slate-400">{people.length} added</span>
                         </div>
 
-                        <div className="overflow-x-auto border border-slate-100 rounded-lg flex-1">
-                            <table className="w-full text-xs">
-                                <thead className="bg-slate-50 text-slate-500">
-                                    <tr>
-                                        <th className="px-3 py-2 text-left font-medium">ATOM ID</th>
-                                        <th className="px-3 py-2 text-left font-medium">Full Name</th>
-                                        <th className="px-3 py-2 text-left font-medium">Stakeholder Type</th>
-                                        <th className="px-3 py-2 text-left font-medium">Contact Number</th>
-                                        <th className="px-3 py-2 text-left font-medium"></th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-slate-100">
-                                    {people.map(p => (
-                                        <tr key={p.id} className="hover:bg-slate-50">
-                                            <td className="px-3 py-2 font-mono">{p.id}</td>
-                                            <td className="px-3 py-2">{p.firstName} {p.lastName}</td>
-                                            <td className="px-3 py-2">
-                                                <span className="bg-blue-50 text-blue-700 text-[10px] px-2 py-1 rounded-full font-semibold">
-                                                    {p.stakeholderType}
-                                                </span>
-                                            </td>
-                                            <td className="px-3 py-2 font-mono">{p.phone}</td>
-                                            <td className="px-3 py-2 text-right">
-                                                <button type="button" onClick={() => removePerson(p.id)}
-                                                    className="text-red-500 hover:text-red-700 text-xs font-medium transition" aria-label={`Remove ${p.firstName} ${p.lastName}`}>
-                                                    Remove
-                                                </button>
-                                            </td>
-                                        </tr>
+                        {(() => {
+                            // Flight/Train: one section per verified PNR, plus an amber "Not on a PNR
+                            // yet" section for anyone still to be placed. Bus/Car have no bookings to
+                            // group by, so it's one flat list as before.
+                            const sections = pnrApplicable
+                                ? [...pnrList.map(n => ({ key: n, title: n, members: people.filter(p => p.pnr === n) })),
+                                   { key: '__none', title: 'Not on a PNR yet', members: people.filter(p => !p.pnr || !pnrList.includes(p.pnr)), warn: true }]
+                                    .filter(sec => sec.members.length > 0 || sec.key !== '__none')
+                                : [{ key: '__all', title: null, members: people }];
+                            if (people.length === 0 && pnrList.length === 0) {
+                                return (
+                                    <p className="flex-1 flex items-center justify-center text-xs text-slate-400 text-center border border-dashed border-slate-200 rounded-lg px-4 py-10">
+                                        No members added yet - use the Federation/SOA/Member Type/Members flow on the left.
+                                    </p>
+                                );
+                            }
+                            return (
+                                <div className="space-y-3 flex-1">
+                                    {sections.map(sec => (
+                                        <div key={sec.key} className={`border rounded-lg overflow-hidden ${sec.warn ? 'border-amber-300' : 'border-slate-200'}`}>
+                                            {sec.title && (
+                                                <div className={`flex items-center justify-between gap-2 px-3 py-2 ${sec.warn ? 'bg-amber-50' : 'bg-slate-50'}`}>
+                                                    <p className={`text-xs font-semibold flex items-center gap-1.5 ${sec.warn ? 'text-amber-700' : 'text-slate-700 font-mono'}`}>
+                                                        {sec.warn ? <Icon name="alert" size={12} /> : <TransportGlyph mode={transportMode} size={12} />}{sec.title}
+                                                    </p>
+                                                    <span className="text-[11px] text-slate-400">{sec.members.length} member{sec.members.length === 1 ? '' : 's'}</span>
+                                                </div>
+                                            )}
+                                            {sec.members.length === 0 ? (
+                                                <p className="px-3 py-3 text-[11px] text-slate-400">Nobody on this booking yet - add members with "Travelling on" set to it, or move someone here.</p>
+                                            ) : (
+                                                <div className="divide-y divide-slate-100">
+                                                    {sec.members.map(p => (
+                                                        <div key={p.id} className="flex items-center gap-3 px-3 py-2 text-xs hover:bg-slate-50">
+                                                            <span className="w-7 h-7 rounded-full bg-gradient-to-br from-blue-500 to-indigo-500 text-white text-[10px] font-bold flex items-center justify-center shrink-0">
+                                                                {(p.firstName?.[0] || '') + (p.lastName?.[0] || '')}
+                                                            </span>
+                                                            <div className="min-w-0 flex-1">
+                                                                <p className="text-slate-800 font-medium truncate">{p.firstName} {p.lastName}</p>
+                                                                <p className="text-slate-400 truncate"><span className="font-mono">{p.id}</span> &middot; {p.phone}</p>
+                                                            </div>
+                                                            <span className="hidden sm:inline bg-blue-50 text-blue-700 text-[10px] px-2 py-1 rounded-full font-semibold shrink-0 max-w-[9rem] truncate">{p.stakeholderType}</span>
+                                                            {pnrApplicable && pnrList.length > 0 && (sec.warn || pnrList.length > 1) && (
+                                                                <select value={p.pnr && pnrList.includes(p.pnr) ? p.pnr : ''} onChange={e => movePersonToPnr(p.id, e.target.value)}
+                                                                    aria-label={`PNR for ${p.firstName} ${p.lastName}`}
+                                                                    className={`shrink-0 px-1.5 py-1 text-[11px] font-mono border rounded-md focus:outline-none ${sec.warn ? 'border-amber-300 bg-white' : 'border-slate-200'}`}>
+                                                                    {sec.warn && <option value="">Pick PNR...</option>}
+                                                                    {pnrList.map(n => <option key={n} value={n}>{n}</option>)}
+                                                                </select>
+                                                            )}
+                                                            <button type="button" onClick={() => removePerson(p.id)}
+                                                                className="shrink-0 text-red-500 hover:text-red-700 text-xs font-medium transition" aria-label={`Remove ${p.firstName} ${p.lastName}`}>
+                                                                Remove
+                                                            </button>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
                                     ))}
-                                    {people.length === 0 && (
-                                        <tr><td colSpan={5} className="px-3 py-8 text-center text-slate-400">No members added yet - use the Federation/SOA/Member Type/Members flow on the left.</td></tr>
-                                    )}
-                                </tbody>
-                            </table>
-                        </div>
+                                </div>
+                            );
+                        })()}
                     </div>
                 </div>
 
@@ -12231,9 +12549,7 @@ window.TravelPlansTab = ({ data, setData }) => {
                         Final Publish Travel Plan
                     </Btn>
                     {!canPublish && (
-                        <p className="text-[11px] text-slate-400 text-center">
-                            Needs Federation, SOA, at least one member{pnrApplicable ? ', and a verified PNR' : ''} before this can be published.
-                        </p>
+                        <p className="text-[11px] text-slate-400 text-center">{publishHint}</p>
                     )}
                 </div>
             </Modal>
